@@ -4,6 +4,7 @@
 import os
 import re
 import sys
+import tarfile
 import fnmatch
 import shutil
 import tempfile
@@ -36,7 +37,7 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path -h -s -x -r -l -N -o -O -j --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream -h -s -x -r -l -N -o -O -j --jobs"
 
     if [[ "$prev" == "-o" ]]; then
         compopt -o filenames 2>/dev/null
@@ -63,7 +64,7 @@ _zxgrep() {
     i=1
     while (( i < COMP_CWORD )); do
         case "${COMP_WORDS[i]}" in
-            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|-O)
+            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|-O)
                 ;;
             -o|-j|--jobs|--include|--exclude)
                 ((i++))
@@ -119,6 +120,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] -l
   {PROGRAM} INPUT WORD1 [WORD2 ...] -N
   {PROGRAM} INPUT WORD1 [WORD2 ...] -j 8
+  {PROGRAM} INPUT WORD1 [WORD2 ...] --stream
   {PROGRAM} --install
   {PROGRAM} --print-bash-completion
   {PROGRAM} --clean
@@ -238,11 +240,19 @@ Notes:
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-  17) --install:
+  17) --stream:
+      Stream processing for tar.zst archives.
+      Instead of extracting the entire archive to a temporary directory,
+      process files one by one directly from the tar stream.
+      Avoids high temporary disk usage for large archives.
+      For directory or single-file inputs, this flag has no effect.
+      Note: -j/--jobs is ignored in stream mode (processing is sequential).
+
+  18) --install:
       Install to /usr/local/bin/zxgrep
       and install bash completion.
 
-  18) --clean:
+  19) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -264,6 +274,7 @@ Examples:
   {PROGRAM} ./docs report -N
   {PROGRAM} ./docs 'report.*2024' -N -r
   {PROGRAM} ./docs exec task -j 4
+  {PROGRAM} archive.tar.zst exec task --stream
   {PROGRAM} --clean
 """)
 
@@ -640,6 +651,27 @@ def worker_search_file(args):
         return None
 
 
+def handle_result(item, matches, outdir, transfer_mode, color_path, is_tty,
+                  list_files, name_only, any_pattern):
+    if outdir is not None:
+        target = outdir / item["rel"]
+        safe_transfer(item["path"], target, transfer_mode)
+        display = pretty_local_path(target)
+    else:
+        display = item["display_path"]
+
+    if list_files or name_only:
+        text = maybe_color_path_text(display, color_path, is_tty)
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+    else:
+        for lineno, colno, line in matches:
+            prefix = make_location_label(display, lineno, colno, color_path, is_tty)
+            colored_line = colorize_line(line, any_pattern, colorize=is_tty)
+            sys.stdout.write(f"{prefix}: {colored_line}\n")
+            sys.stdout.flush()
+
+
 def choose_completion_target():
     candidates = [
         Path("/usr/share/bash-completion/completions"),
@@ -753,6 +785,7 @@ def parse_args(argv):
     or_mode = False
     includes = []
     excludes = []
+    stream = False
 
     stop_opts = False
     i = 0
@@ -872,6 +905,10 @@ def parse_args(argv):
                     die(f"Invalid process count: {argv[i]}")
                 i += 1
                 continue
+            elif arg == "--stream":
+                stream = True
+                i += 1
+                continue
             elif arg.startswith("-"):
                 die(f"Unsupported option: {arg}")
 
@@ -916,6 +953,7 @@ def parse_args(argv):
         "color_path": color_path,
         "jobs": jobs,
         "filters": filters,
+        "stream": stream,
     }
 
 
@@ -933,6 +971,7 @@ def run_search(args):
     color_path = args["color_path"]
     jobs = args["jobs"]
     filters = args["filters"]
+    stream = args["stream"]
 
     source_info = detect_input_kind(input_path)
 
@@ -941,85 +980,101 @@ def run_search(args):
 
     is_tty = sys.stdout.isatty()
 
+    opts = {
+        "file_mode": file_mode,
+        "list_files": list_files,
+        "name_only": name_only,
+        "or_mode": or_mode,
+    }
+
+    if outdir is not None:
+        outdir = abs_path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+
+    found = False
+    matched_count = 0
+
+    def on_result(result):
+        nonlocal found, matched_count
+        if result is None:
+            return
+        found = True
+        matched_count += 1
+        handle_result(result[0], result[1], outdir, transfer_mode,
+                      color_path, is_tty, list_files, name_only, any_pattern)
+
     temp_root = None
-    extracted_root = None
+    stream_tmp = None
+    stream_proc = None
 
     try:
-        if source_info["kind"] == "archive":
-            temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(pick_tmp_root())))
-            extract_archive(source_info["path"], temp_root)
-            extracted_root = temp_root
-
-        exclude_dir = None
-        if source_info["kind"] == "dir" and outdir is not None:
-            if path_is_within(str(outdir), str(source_info["path"])):
-                exclude_dir = outdir
-
-        items = build_source_items(
-            source_info,
-            extracted_root=extracted_root,
-            exclude_dir=exclude_dir,
-            filters=filters,
-        )
-
-        if not items:
-            return False
-
-        opts = {
-            "file_mode": file_mode,
-            "list_files": list_files,
-            "name_only": name_only,
-            "or_mode": or_mode,
-        }
-
-        task_args = [
-            (item, all_patterns, any_pattern, opts)
-            for item in items
-        ]
-
-        matched_count = 0
-        found = False
-
-        if outdir is not None:
-            outdir = abs_path(outdir)
-            outdir.mkdir(parents=True, exist_ok=True)
-
-        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
-            future_to_item = {
-                executor.submit(worker_search_file, arg): arg[0]
-                for arg in task_args
-            }
-
-            for future in concurrent.futures.as_completed(future_to_item):
+        if source_info["kind"] == "archive" and stream:
+            require_cmd("zstd")
+            stream_proc = subprocess.Popen(
+                ["zstd", "-d", "-T0", str(source_info["path"]), "-c"],
+                stdout=subprocess.PIPE,
+            )
+            stream_tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
+            tf = tarfile.open(fileobj=stream_proc.stdout, mode="r|")
+            for member in tf:
+                if not member.isfile():
+                    continue
+                rel = member.name
+                if rel.startswith("./"):
+                    rel = rel[2:]
+                if not check_file_filters(rel, filters):
+                    continue
+                ef = tf.extractfile(member)
+                if ef is None:
+                    continue
+                tmp_path = stream_tmp / "current"
+                with open(str(tmp_path), "wb") as out_f:
+                    shutil.copyfileobj(ef, out_f)
+                item = {"rel": rel, "path": str(tmp_path), "display_path": rel}
+                on_result(worker_search_file((item, all_patterns, any_pattern, opts)))
                 try:
-                    result = future.result()
-                except Exception:
-                    continue
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+            tf.close()
+        else:
+            extracted_root = None
+            if source_info["kind"] == "archive":
+                temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(pick_tmp_root())))
+                extract_archive(source_info["path"], temp_root)
+                extracted_root = temp_root
 
-                if result is None:
-                    continue
+            exclude_dir = None
+            if source_info["kind"] == "dir" and outdir is not None:
+                if path_is_within(str(outdir), str(source_info["path"])):
+                    exclude_dir = outdir
 
-                item, matches = result
-                found = True
-                matched_count += 1
+            items = build_source_items(
+                source_info,
+                extracted_root=extracted_root,
+                exclude_dir=exclude_dir,
+                filters=filters,
+            )
 
-                if outdir is not None:
-                    target = outdir / item["rel"]
-                    safe_transfer(item["path"], target, transfer_mode)
-                    display = pretty_local_path(target)
-                else:
-                    display = item["display_path"]
+            if not items:
+                return False
 
-                if list_files or name_only:
-                    text = maybe_color_path_text(display, color_path, is_tty)
-                    sys.stdout.write(text + "\n")
-                    sys.stdout.flush()
-                else:
-                    for lineno, colno, line in matches:
-                        prefix = make_location_label(display, lineno, colno, color_path, is_tty)
-                        colored_line = colorize_line(line, any_pattern, colorize=is_tty)
-                        sys.stdout.write(f"{prefix}: {colored_line}\n")
-                        sys.stdout.flush()
+            task_args = [
+                (item, all_patterns, any_pattern, opts)
+                for item in items
+            ]
+
+            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+                future_to_item = {
+                    executor.submit(worker_search_file, arg): arg[0]
+                    for arg in task_args
+                }
+                for future in concurrent.futures.as_completed(future_to_item):
+                    try:
+                        result = future.result()
+                    except Exception:
+                        continue
+                    on_result(result)
 
         if outdir is not None and matched_count > 0:
             action_text = "copied" if transfer_mode == "copy" else "moved"
@@ -1030,6 +1085,11 @@ def run_search(args):
     finally:
         if temp_root is not None:
             shutil.rmtree(temp_root, ignore_errors=True)
+        if stream_tmp is not None:
+            shutil.rmtree(stream_tmp, ignore_errors=True)
+        if stream_proc is not None:
+            stream_proc.terminate()
+            stream_proc.wait()
 
 
 def main(argv):

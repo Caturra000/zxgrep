@@ -42,6 +42,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] -l
   zxgrep INPUT WORD1 [WORD2 ...] -N
   zxgrep INPUT WORD1 [WORD2 ...] -j 8
+  zxgrep INPUT WORD1 [WORD2 ...] --stream
   zxgrep --install
   zxgrep --print-bash-completion
   zxgrep --clean
@@ -161,11 +162,19 @@ Notes:
         zxgrep ./docs exec task -j 8
         zxgrep archive.tar.zst exec -j 4
 
-  17) --install:
+  17) --stream:
+      Stream processing for tar.zst archives.
+      Instead of extracting the entire archive to a temporary directory,
+      process files one by one directly from the tar stream.
+      Avoids high temporary disk usage for large archives.
+      For directory or single-file inputs, this flag has no effect.
+      Note: -j/--jobs is ignored in stream mode (processing is sequential).
+
+  18) --install:
       Install to /usr/local/bin/zxgrep
       and install bash completion.
 
-  18) --clean:
+  19) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -187,6 +196,7 @@ Examples:
   zxgrep ./docs report -N
   zxgrep ./docs 'report.*2024' -N -r
   zxgrep ./docs exec task -j 4
+  zxgrep archive.tar.zst exec task --stream
   zxgrep --clean
 """)
 ```
