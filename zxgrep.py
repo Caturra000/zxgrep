@@ -297,7 +297,7 @@ def abs_path(p):
 
 
 def sanitize_component(s):
-    return re.sub(r"[^A-Za-z0-9._+-]", "_", s)
+    return re.sub(r"[^\w._+-]", "_", s)
 
 
 def auto_outdir_name(words):
