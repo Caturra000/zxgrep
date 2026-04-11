@@ -37,7 +37,7 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream -h -s -x -r -l -N -o -O -j --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat -h -s -x -r -l -N -o -O -j --jobs"
 
     if [[ "$prev" == "-o" ]]; then
         compopt -o filenames 2>/dev/null
@@ -64,7 +64,7 @@ _zxgrep() {
     i=1
     while (( i < COMP_CWORD )); do
         case "${COMP_WORDS[i]}" in
-            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|-O)
+            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|-O)
                 ;;
             -o|-j|--jobs|--include|--exclude)
                 ((i++))
@@ -121,6 +121,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] -N
   {PROGRAM} INPUT WORD1 [WORD2 ...] -j 8
   {PROGRAM} INPUT WORD1 [WORD2 ...] --stream
+  {PROGRAM} INPUT WORD1 [WORD2 ...] -O --flat
   {PROGRAM} --install
   {PROGRAM} --print-bash-completion
   {PROGRAM} --clean
@@ -229,10 +230,20 @@ Notes:
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  15) Text file detection:
+  15) --flat:
+      Flatten output directory structure (only effective with -o or -O).
+      Instead of preserving the original directory hierarchy, all matched files
+      are placed directly in the target directory (single level).
+      If multiple files have the same name, conflicts are resolved by appending
+      .conflict-N before the file extension.
+      Example:
+        {PROGRAM} ./docs exec task -O --flat
+        # Results in: zxgrep_exec+task/file1.txt, zxgrep_exec+task/file1.conflict-1.txt
+
+  16) Text file detection:
       For directory/single-file input, obvious binary files are skipped (simple NUL-byte check).
 
-  16) -j / --jobs:
+  17) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -240,7 +251,7 @@ Notes:
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-  17) --stream:
+  18) --stream:
       Stream processing for tar.zst archives.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -248,11 +259,11 @@ Notes:
       For directory or single-file inputs, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  18) --install:
+  19) --install:
       Install to /usr/local/bin/zxgrep
       and install bash completion.
 
-  19) --clean:
+  20) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -271,6 +282,7 @@ Examples:
   {PROGRAM} ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   {PROGRAM} ./docs exec task -l
   {PROGRAM} ./docs exec task -O --move
+  {PROGRAM} ./docs exec task -O --flat
   {PROGRAM} ./docs report -N
   {PROGRAM} ./docs 'report.*2024' -N -r
   {PROGRAM} ./docs exec task -j 4
@@ -560,6 +572,24 @@ def safe_transfer(src, dst, transfer_mode):
         die(f"Internal error: unknown output mode {transfer_mode}")
 
 
+def resolve_flat_target(outdir, rel_path):
+    basename = Path(rel_path).name
+    target = outdir / basename
+
+    if not target.exists():
+        return target
+
+    stem = Path(basename).stem
+    suffix = Path(basename).suffix
+    n = 1
+    while True:
+        new_name = f"{stem}.conflict-{n}{suffix}"
+        target = outdir / new_name
+        if not target.exists():
+            return target
+        n += 1
+
+
 def build_source_items(source_info, extracted_root=None, exclude_dir=None, filters=None):
     kind = source_info["kind"]
 
@@ -652,9 +682,12 @@ def worker_search_file(args):
 
 
 def handle_result(item, matches, outdir, transfer_mode, color_path, is_tty,
-                  list_files, name_only, any_pattern):
+                  list_files, name_only, any_pattern, flat):
     if outdir is not None:
-        target = outdir / item["rel"]
+        if flat:
+            target = resolve_flat_target(outdir, item["rel"])
+        else:
+            target = outdir / item["rel"]
         safe_transfer(item["path"], target, transfer_mode)
         display = pretty_local_path(target)
     else:
@@ -786,6 +819,7 @@ def parse_args(argv):
     includes = []
     excludes = []
     stream = False
+    flat = False
 
     stop_opts = False
     i = 0
@@ -909,6 +943,10 @@ def parse_args(argv):
                 stream = True
                 i += 1
                 continue
+            elif arg == "--flat":
+                flat = True
+                i += 1
+                continue
             elif arg.startswith("-"):
                 die(f"Unsupported option: {arg}")
 
@@ -927,6 +965,9 @@ def parse_args(argv):
 
     if auto_out:
         outdir = abs_path(auto_outdir_name(words))
+
+    if flat and outdir is None:
+        die("--flat can only be used with -o or -O")
 
     if transfer_mode_set and outdir is None:
         die("--copy/--move can only be used with -o or -O")
@@ -954,6 +995,7 @@ def parse_args(argv):
         "jobs": jobs,
         "filters": filters,
         "stream": stream,
+        "flat": flat,
     }
 
 
@@ -972,6 +1014,7 @@ def run_search(args):
     jobs = args["jobs"]
     filters = args["filters"]
     stream = args["stream"]
+    flat = args["flat"]
 
     source_info = detect_input_kind(input_path)
 
@@ -1001,7 +1044,7 @@ def run_search(args):
         found = True
         matched_count += 1
         handle_result(result[0], result[1], outdir, transfer_mode,
-                      color_path, is_tty, list_files, name_only, any_pattern)
+                      color_path, is_tty, list_files, name_only, any_pattern, flat)
 
     temp_root = None
     stream_tmp = None

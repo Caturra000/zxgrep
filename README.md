@@ -43,6 +43,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] -N
   zxgrep INPUT WORD1 [WORD2 ...] -j 8
   zxgrep INPUT WORD1 [WORD2 ...] --stream
+  zxgrep INPUT WORD1 [WORD2 ...] -O --flat
   zxgrep --install
   zxgrep --print-bash-completion
   zxgrep --clean
@@ -151,10 +152,20 @@ Notes:
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  15) Text file detection:
+  15) --flat:
+      Flatten output directory structure (only effective with -o or -O).
+      Instead of preserving the original directory hierarchy, all matched files
+      are placed directly in the target directory (single level).
+      If multiple files have the same name, conflicts are resolved by appending
+      .conflict-N before the file extension.
+      Example:
+        zxgrep ./docs exec task -O --flat
+        # Results in: zxgrep_exec+task/file1.txt, zxgrep_exec+task/file1.conflict-1.txt
+
+  16) Text file detection:
       For directory/single-file input, obvious binary files are skipped (simple NUL-byte check).
 
-  16) -j / --jobs:
+  17) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -162,7 +173,7 @@ Notes:
         zxgrep ./docs exec task -j 8
         zxgrep archive.tar.zst exec -j 4
 
-  17) --stream:
+  18) --stream:
       Stream processing for tar.zst archives.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -170,11 +181,11 @@ Notes:
       For directory or single-file inputs, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  18) --install:
+  19) --install:
       Install to /usr/local/bin/zxgrep
       and install bash completion.
 
-  19) --clean:
+  20) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -193,6 +204,7 @@ Examples:
   zxgrep ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   zxgrep ./docs exec task -l
   zxgrep ./docs exec task -O --move
+  zxgrep ./docs exec task -O --flat
   zxgrep ./docs report -N
   zxgrep ./docs 'report.*2024' -N -r
   zxgrep ./docs exec task -j 4
