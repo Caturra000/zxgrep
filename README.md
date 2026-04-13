@@ -57,7 +57,8 @@ Notes:
   1) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
-     If INPUT is a tar.zst, it will be extracted to /dev/shm first (fallback to /tmp if unavailable).
+     If INPUT is a tar.zst, it will be extracted to a temporary directory first
+     (prefers shared memory on Linux if available, otherwise system temp).
 
   2) --file mode:
      Search by "file".
@@ -182,8 +183,8 @@ Notes:
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
   19) --install:
-      Install to /usr/local/bin/zxgrep
-      and install bash completion.
+      Install to /usr/local/bin/zxgrep and bash completion (Unix).
+      On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
   20) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
@@ -215,12 +216,19 @@ Examples:
 
 ## Platform
 
-Linux
+Linux / Windows
+
+macOS might be available, but hasn't been tested yet.
+
+## Requirements
+
+- python
+- [zstd](https://github.com/facebook/zstd) (optional)
 
 ## Installation
 
 1. Clone this project or just copy the single file (`zxgrep.py`).
-2. Run `python3 zxgrep.py --install` and follow the instructions.
+2. Run `python zxgrep.py --install` and follow the instructions.
 3. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
 
 ## License

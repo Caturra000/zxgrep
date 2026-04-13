@@ -135,7 +135,8 @@ Notes:
   1) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
-     If INPUT is a tar.zst, it will be extracted to /dev/shm first (fallback to /tmp if unavailable).
+     If INPUT is a tar.zst, it will be extracted to a temporary directory first
+     (prefers shared memory on Linux if available, otherwise system temp).
 
   2) --file mode:
      Search by "file".
@@ -260,8 +261,8 @@ Notes:
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
   19) --install:
-      Install to /usr/local/bin/zxgrep
-      and install bash completion.
+      Install to /usr/local/bin/zxgrep and bash completion (Unix).
+      On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
   20) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
@@ -298,10 +299,11 @@ def require_cmd(*cmds):
 
 
 def pick_tmp_root():
-    shm = Path("/dev/shm")
-    if shm.exists() and os.access(str(shm), os.W_OK):
-        return shm
-    return Path(os.environ.get("TMPDIR", "/tmp"))
+    if sys.platform != "win32":
+        shm = Path("/dev/shm")
+        if shm.exists() and os.access(str(shm), os.W_OK):
+            return shm
+    return Path(tempfile.gettempdir())
 
 
 def abs_path(p):
@@ -385,11 +387,21 @@ def detect_input_kind(input_path):
 
 
 def extract_archive(archive, dest):
-    require_cmd("tar", "zstd")
-    subprocess.run(
-        ["tar", "-I", "zstd -T0", "-xf", str(archive), "-C", str(dest)],
-        check=True
+    require_cmd("zstd")
+    proc = subprocess.Popen(
+        ["zstd", "-d", "-T0", str(archive), "-c"],
+        stdout=subprocess.PIPE,
     )
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+            tf.extractall(path=str(dest))
+    except Exception:
+        proc.terminate()
+        proc.wait()
+        raise
+    proc.wait()
+    if proc.returncode != 0:
+        die(f"zstd decompression failed with exit code {proc.returncode}")
 
 
 def iter_dir_files(root, exclude_dir=None, filters=None):
@@ -728,7 +740,7 @@ def install_file(src, dst, mode, use_sudo):
         subprocess.run(["install", "-m", f"{mode:o}", str(src), str(dst)], check=True)
 
 
-def install_self():
+def _install_self_unix():
     self_path = Path(__file__).resolve()
     bin_target = Path("/usr/local/bin") / PROGRAM
     comp_target = choose_completion_target()
@@ -755,6 +767,184 @@ def install_self():
     print(f"Installed Bash completion to: {comp_target}")
     print("If completion still doesn't work in the current shell, open a new Bash or run:")
     print(f"  source {comp_target}")
+
+
+def _add_to_user_path_windows(directory):
+    try:
+        import winreg
+    except ImportError:
+        return False
+
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        )
+        try:
+            current, _ = winreg.QueryValueEx(key, "PATH")
+            paths = [os.path.normcase(p) for p in current.split(os.pathsep) if p]
+            if os.path.normcase(directory) in paths:
+                return True
+            new_path = current.rstrip(os.pathsep) + os.pathsep + directory
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
+        except FileNotFoundError:
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, directory)
+        finally:
+            winreg.CloseKey(key)
+
+        # Broadcast WM_SETTINGCHANGE so new terminals pick up the change
+        try:
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None,
+            )
+        except Exception:
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
+def _find_git_bash_completion_dir():
+    candidates = []
+
+    for env_var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        pf = os.environ.get(env_var)
+        if pf:
+            candidates.append(Path(pf) / "Git")
+
+    try:
+        r = subprocess.run(
+            ["git", "--exec-path"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            # e.g. C:\Program Files\Git\mingw64\libexec\git-core → root is 3 levels up
+            candidates.append(Path(r.stdout.strip()).parent.parent.parent)
+    except Exception:
+        pass
+
+    seen = set()
+    for gd in candidates:
+        norm = os.path.normcase(str(gd))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        d = gd / "usr" / "share" / "bash-completion" / "completions"
+        if d.is_dir() and os.access(str(d), os.W_OK):
+            return d
+    return None
+
+
+def _install_completion_windows():
+    sys_dir = _find_git_bash_completion_dir()
+    if sys_dir is not None:
+        target = sys_dir / PROGRAM
+        target.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8", newline="\n")
+        print(f"Installed Bash completion to: {target}")
+        return
+
+    home = Path.home()
+    comp_dir = home / ".bash_completion.d"
+    comp_dir.mkdir(parents=True, exist_ok=True)
+    target = comp_dir / PROGRAM
+    target.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8", newline="\n")
+    print(f"Installed Bash completion to: {target}")
+
+    source_line = f"[ -f ~/.bash_completion.d/{PROGRAM} ] && . ~/.bash_completion.d/{PROGRAM}"
+
+    bashrc = home / ".bashrc"
+    need_append = True
+    if bashrc.exists():
+        if PROGRAM in bashrc.read_text(encoding="utf-8", errors="replace"):
+            need_append = False
+
+    if need_append:
+        with open(str(bashrc), "a", encoding="utf-8", newline="\n") as f:
+            f.write(f"\n{source_line}\n")
+        print(f"Added source line to: {bashrc}")
+
+    bash_profile = home / ".bash_profile"
+    if not bash_profile.exists():
+        bash_profile.write_text(
+            '# ~/.bash_profile\n'
+            'if [ -f ~/.bashrc ]; then\n'
+            '  . ~/.bashrc\n'
+            'fi\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"Created: {bash_profile}")
+
+
+def _install_self_windows():
+    self_path = Path(__file__).resolve()
+
+    import sysconfig
+    scripts_dir = Path(sysconfig.get_path("scripts"))
+
+    if not os.access(str(scripts_dir), os.W_OK):
+        scripts_dir = Path(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+        ) / "zxgrep-bin"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+
+    target_py = scripts_dir / "zxgrep.py"
+    target_cmd = scripts_dir / "zxgrep.cmd"
+    target_sh = scripts_dir / "zxgrep"
+
+    shutil.copy2(str(self_path), str(target_py))
+
+    # CMD / PowerShell
+    target_cmd.write_text(
+        '@python "%~dp0zxgrep.py" %*\n',
+        encoding="ascii",
+    )
+
+    # Git Bash / MSYS2 (LF required)
+    target_sh.write_text(
+        '#!/bin/sh\nexec python "$(dirname "$0")/zxgrep.py" "$@"\n',
+        encoding="ascii",
+        newline="\n",
+    )
+
+    print(f"Installed main program to: {target_py}")
+    print(f"Created launcher (cmd):    {target_cmd}")
+    print(f"Created launcher (bash):   {target_sh}")
+
+    # Bash completion for Git Bash
+    _install_completion_windows()
+
+    path_dirs = [
+        os.path.normcase(p)
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+        if p
+    ]
+    norm_scripts = os.path.normcase(str(scripts_dir))
+
+    if norm_scripts in path_dirs:
+        print(f"\n{scripts_dir} is already on your PATH.")
+        print("You can now use:  zxgrep <args>")
+    else:
+        added = _add_to_user_path_windows(str(scripts_dir))
+        if added:
+            print(f"\nAdded {scripts_dir} to your user PATH.")
+            print("Please open a NEW terminal window, then use:  zxgrep <args>")
+        else:
+            print(f"\nCould not automatically add to PATH.")
+            print("Please manually add this directory to your user PATH:")
+            print(f"  {scripts_dir}")
+            print("Then open a new terminal and use:  zxgrep <args>")
+
+
+def install_self():
+    if sys.platform == "win32":
+        _install_self_windows()
+    else:
+        _install_self_unix()
 
 
 def print_bash_completion():
@@ -1135,7 +1325,24 @@ def run_search(args):
             stream_proc.wait()
 
 
+def enable_windows_ansi():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        if not (mode.value & 0x0004):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
 def main(argv):
+    enable_windows_ansi()
+
     args = parse_args(argv)
 
     if args["action"] == "install":
