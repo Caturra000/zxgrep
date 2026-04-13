@@ -190,10 +190,18 @@ Notes:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
+  21) PDF support:
+      Files ending in .pdf are automatically extracted and searched.
+      Requires the 'pdftotext' command (part of Poppler):
+        Linux:   sudo apt install poppler-utils
+        Windows: choco install poppler (or scoop install poppler)
+      If 'pdftotext' is not installed, PDF files are silently skipped.
+
 Examples:
   zxgrep archive.tar.zst exec task
   zxgrep ./docs exec task
   zxgrep ./docs/a.txt exec task
+  zxgrep ./docs/report.pdf exec task
   zxgrep archive.tar.zst exec task --file
   zxgrep ./docs exec task -O
   zxgrep ./docs exec task --exact
@@ -224,6 +232,7 @@ macOS might be available, but hasn't been tested yet.
 
 - python
 - [zstd](https://github.com/facebook/zstd) (optional)
+- [poppler](https://poppler.freedesktop.org/) (optional)
 
 ## Installation
 

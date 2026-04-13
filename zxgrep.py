@@ -268,10 +268,18 @@ Notes:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
+  21) PDF support:
+      Files ending in .pdf are automatically extracted and searched.
+      Requires the 'pdftotext' command (part of Poppler):
+        Linux:   sudo apt install poppler-utils
+        Windows: choco install poppler (or scoop install poppler)
+      If 'pdftotext' is not installed, PDF files are silently skipped.
+
 Examples:
   {PROGRAM} archive.tar.zst exec task
   {PROGRAM} ./docs exec task
   {PROGRAM} ./docs/a.txt exec task
+  {PROGRAM} ./docs/report.pdf exec task
   {PROGRAM} archive.tar.zst exec task --file
   {PROGRAM} ./docs exec task -O
   {PROGRAM} ./docs exec task --exact
@@ -619,6 +627,31 @@ def build_source_items(source_info, extracted_root=None, exclude_dir=None, filte
     die(f"Internal error: unknown input kind {kind}")
 
 
+def _extract_pdf_lines(path):
+    if shutil.which("pdftotext") is None:
+        return None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxgrep_pdf_")
+        os.close(fd)
+        try:
+            r = subprocess.run(
+                ["pdftotext", "-enc", "UTF-8", "-layout", str(path), tmp],
+                capture_output=True,
+            )
+            if r.returncode != 0:
+                return None
+            with open(tmp, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return lines if lines else None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        return None
+
+
 def worker_search_file(args):
     item, all_patterns, any_pattern, opts = args
 
@@ -638,7 +671,9 @@ def worker_search_file(args):
             return (item, [])
         return None
 
-    if not is_probably_text_file(path):
+    is_pdf = Path(path).suffix.lower() == ".pdf"
+
+    if not is_pdf and not is_probably_text_file(path):
         return None
 
     try:
@@ -646,12 +681,22 @@ def worker_search_file(args):
             found_patterns = set()
             lines_cache = []
 
-            with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                for line in f:
-                    lines_cache.append(line)
+            if is_pdf:
+                pdf_lines = _extract_pdf_lines(path)
+                if pdf_lines is None:
+                    return None
+                lines_cache = pdf_lines
+                for line in lines_cache:
                     for idx, pat in enumerate(all_patterns):
                         if pat.search(line):
                             found_patterns.add(idx)
+            else:
+                with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+                    for line in f:
+                        lines_cache.append(line)
+                        for idx, pat in enumerate(all_patterns):
+                            if pat.search(line):
+                                found_patterns.add(idx)
 
             if or_mode:
                 if not found_patterns:
@@ -672,18 +717,33 @@ def worker_search_file(args):
 
         else:
             matches = []
-            with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                for lineno, line in enumerate(f, start=1):
+
+            if is_pdf:
+                pdf_lines = _extract_pdf_lines(path)
+                if pdf_lines is None:
+                    return None
+                for lineno, line in enumerate(pdf_lines, start=1):
                     if or_mode:
                         matched = any(p.search(line) for p in all_patterns)
                     else:
                         matched = all(p.search(line) for p in all_patterns)
-
                     if matched:
                         if list_files:
                             return (item, [])
                         colno = first_match_column(line, any_pattern)
                         matches.append((lineno, colno, line))
+            else:
+                with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+                    for lineno, line in enumerate(f, start=1):
+                        if or_mode:
+                            matched = any(p.search(line) for p in all_patterns)
+                        else:
+                            matched = all(p.search(line) for p in all_patterns)
+                        if matched:
+                            if list_files:
+                                return (item, [])
+                            colno = first_match_column(line, any_pattern)
+                            matches.append((lineno, colno, line))
 
             if matches:
                 return (item, matches)
