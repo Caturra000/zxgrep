@@ -10,7 +10,9 @@ import shutil
 import tempfile
 import subprocess
 import concurrent.futures
+import zipfile
 from pathlib import Path
+from html.parser import HTMLParser
 
 
 PROGRAM = "zxgrep"
@@ -275,11 +277,22 @@ Notes:
         Windows: choco install poppler (or scoop install poppler)
       If 'pdftotext' is not installed, PDF files are silently skipped.
 
+  22) eBook support (EPUB / MOBI / AZW3):
+      - .epub files are parsed natively using the Python standard library (no external
+        dependencies). HTML/XHTML content inside the EPUB archive is extracted as plain text.
+      - .mobi and .azw3 files require the 'ebook-convert' command (part of Calibre):
+          Linux:   sudo apt install calibre
+          Windows: choco install calibre
+        If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
+
 Examples:
   {PROGRAM} archive.tar.zst exec task
   {PROGRAM} ./docs exec task
   {PROGRAM} ./docs/a.txt exec task
   {PROGRAM} ./docs/report.pdf exec task
+  {PROGRAM} ./docs/book.epub hello world
+  {PROGRAM} ./docs/book.mobi chapter
+  {PROGRAM} ./docs/book.azw3 introduction
   {PROGRAM} archive.tar.zst exec task --file
   {PROGRAM} ./docs exec task -O
   {PROGRAM} ./docs exec task --exact
@@ -652,6 +665,116 @@ def _extract_pdf_lines(path):
         return None
 
 
+class _EPUBTextExtractor(HTMLParser):
+    _BLOCK_TAGS = frozenset({
+        'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'li', 'tr', 'blockquote', 'section', 'article', 'header',
+        'footer', 'nav', 'aside', 'main', 'figure', 'figcaption',
+        'details', 'summary', 'dl', 'dt', 'dd', 'ul', 'ol', 'table',
+        'thead', 'tbody', 'tfoot', 'th', 'td', 'hr', 'pre',
+    })
+    _SKIP_TAGS = frozenset({'script', 'style', 'head'})
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t in self._SKIP_TAGS:
+            self._skip_depth += 1
+        if t in self._BLOCK_TAGS:
+            self.parts.append('\n')
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        if t in self._BLOCK_TAGS:
+            self.parts.append('\n')
+
+    def handle_data(self, data):
+        if self._skip_depth == 0:
+            self.parts.append(data)
+
+
+def _extract_epub_lines(path):
+    try:
+        with zipfile.ZipFile(path, 'r') as zf:
+            names = zf.namelist()
+            content_files = [
+                n for n in names
+                if n.lower().endswith(('.html', '.htm', '.xhtml'))
+                and not n.startswith('META-INF/')
+                and n != 'mimetype'
+            ]
+            content_files.sort()
+
+            extractor = _EPUBTextExtractor()
+            for cf in content_files:
+                try:
+                    raw = zf.read(cf)
+                    text = None
+                    for enc in ('utf-8', 'latin-1'):
+                        try:
+                            text = raw.decode(enc)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if text is None:
+                        continue
+                    extractor.feed(text)
+                except Exception:
+                    continue
+
+            full_text = ''.join(extractor.parts)
+            lines = [line + '\n' for line in full_text.split('\n')]
+            return lines if any(line.strip() for line in lines) else None
+    except Exception:
+        return None
+
+
+def _extract_mobi_azw3_lines(path):
+    if shutil.which("ebook-convert") is None:
+        return None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxgrep_ebook_")
+        os.close(fd)
+        try:
+            r = subprocess.run(
+                ["ebook-convert", str(path), tmp],
+                capture_output=True,
+                timeout=120,
+            )
+            if r.returncode != 0:
+                return None
+            with open(tmp, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return lines if lines else None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        return None
+
+
+_SPECIAL_EXTS = ('.pdf', '.epub', '.mobi', '.azw3')
+
+
+def _get_special_lines(path):
+    suffix = Path(path).suffix.lower()
+    if suffix == '.pdf':
+        return _extract_pdf_lines(path)
+    elif suffix == '.epub':
+        return _extract_epub_lines(path)
+    elif suffix in ('.mobi', '.azw3'):
+        return _extract_mobi_azw3_lines(path)
+    return None
+
+
 def worker_search_file(args):
     item, all_patterns, any_pattern, opts = args
 
@@ -671,9 +794,9 @@ def worker_search_file(args):
             return (item, [])
         return None
 
-    is_pdf = Path(path).suffix.lower() == ".pdf"
+    is_special = Path(path).suffix.lower() in _SPECIAL_EXTS
 
-    if not is_pdf and not is_probably_text_file(path):
+    if not is_special and not is_probably_text_file(path):
         return None
 
     try:
@@ -681,11 +804,11 @@ def worker_search_file(args):
             found_patterns = set()
             lines_cache = []
 
-            if is_pdf:
-                pdf_lines = _extract_pdf_lines(path)
-                if pdf_lines is None:
+            if is_special:
+                special_lines = _get_special_lines(path)
+                if special_lines is None:
                     return None
-                lines_cache = pdf_lines
+                lines_cache = special_lines
                 for line in lines_cache:
                     for idx, pat in enumerate(all_patterns):
                         if pat.search(line):
@@ -718,11 +841,11 @@ def worker_search_file(args):
         else:
             matches = []
 
-            if is_pdf:
-                pdf_lines = _extract_pdf_lines(path)
-                if pdf_lines is None:
+            if is_special:
+                special_lines = _get_special_lines(path)
+                if special_lines is None:
                     return None
-                for lineno, line in enumerate(pdf_lines, start=1):
+                for lineno, line in enumerate(special_lines, start=1):
                     if or_mode:
                         matched = any(p.search(line) for p in all_patterns)
                     else:
@@ -1407,6 +1530,7 @@ def enable_windows_ansi():
 
 
 def main(argv):
+    sys.stdout.reconfigure(encoding='utf-8')
     enable_windows_ansi()
 
     args = parse_args(argv)

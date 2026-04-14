@@ -197,11 +197,22 @@ Notes:
         Windows: choco install poppler (or scoop install poppler)
       If 'pdftotext' is not installed, PDF files are silently skipped.
 
+  22) eBook support (EPUB / MOBI / AZW3):
+      - .epub files are parsed natively using the Python standard library (no external
+        dependencies). HTML/XHTML content inside the EPUB archive is extracted as plain text.
+      - .mobi and .azw3 files require the 'ebook-convert' command (part of Calibre):
+          Linux:   sudo apt install calibre
+          Windows: choco install calibre
+        If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
+
 Examples:
   zxgrep archive.tar.zst exec task
   zxgrep ./docs exec task
   zxgrep ./docs/a.txt exec task
   zxgrep ./docs/report.pdf exec task
+  zxgrep ./docs/book.epub hello world
+  zxgrep ./docs/book.mobi chapter
+  zxgrep ./docs/book.azw3 introduction
   zxgrep archive.tar.zst exec task --file
   zxgrep ./docs exec task -O
   zxgrep ./docs exec task --exact
@@ -233,6 +244,7 @@ macOS might be available, but hasn't been tested yet.
 - python
 - [zstd](https://github.com/facebook/zstd) (optional)
 - [poppler](https://poppler.freedesktop.org/) (optional)
+- [calibre](https://calibre-ebook.com/) (optional)
 
 ## Installation
 
