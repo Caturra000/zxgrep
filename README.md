@@ -22,8 +22,8 @@ zxgrep /tmp/test.tar.zst awesome xg
 
 Output (with highlight):
 
-test1.txt:1:2: z**xg**rep is **awesome**  
-test2.txt:3:1: **awesome** z**xg**rep
+test1.txt:1:2: z<mark>**xg**</mark>rep is <mark>**awesome**</mark>  
+test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
 
 ### More details
 
@@ -222,7 +222,7 @@ Examples:
 """)
 ```
 
-## Platform
+## Platforms
 
 Linux / Windows
 
@@ -239,6 +239,10 @@ macOS might be available, but hasn't been tested yet.
 1. Clone this project or just copy the single file (`zxgrep.py`).
 2. Run `python zxgrep.py --install` and follow the instructions.
 3. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
+
+## Note
+
+Please note that `zxgrep` is intended for personal use and is not designed for performance. If you need better performance, rewrite it in any native language.
 
 ## License
 
