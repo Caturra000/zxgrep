@@ -928,7 +928,13 @@ def _install_completion_windows():
         print(f"Added source line to: {bashrc}")
 
     bash_profile = home / ".bash_profile"
-    if not bash_profile.exists():
+    if bash_profile.exists():
+        bp_text = bash_profile.read_text(encoding="utf-8", errors="replace")
+        if 'bashrc' not in bp_text and PROGRAM not in bp_text:
+            with open(str(bash_profile), "a", encoding="utf-8", newline="\n") as f:
+                f.write(f"\n{source_line}\n")
+            print(f"Added source line to: {bash_profile}")
+    else:
         bash_profile.write_text(
             '# ~/.bash_profile\n'
             'if [ -f ~/.bashrc ]; then\n'
