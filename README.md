@@ -20,7 +20,7 @@ tar -I zstd -cf /tmp/test.tar.zst -C /tmp test1.txt test2.txt
 zxgrep /tmp/test.tar.zst awesome xg
 ```
 
-Output (with highlight):
+Output:
 
 test1.txt:1:2: z<mark>**xg**</mark>rep is <mark>**awesome**</mark>  
 test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
@@ -44,6 +44,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] -j 8
   zxgrep INPUT WORD1 [WORD2 ...] --stream
   zxgrep INPUT WORD1 [WORD2 ...] -O --flat
+  zxgrep INPUT WORD1 [WORD2 ...] --ugrep
   zxgrep --install
   zxgrep --print-bash-completion
   zxgrep --clean
@@ -205,6 +206,19 @@ Notes:
           Windows: choco install calibre
         If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
 
+  23) --ugrep:
+      Delegate text search to the 'ugrep' command for significantly better performance.
+      Requires 'ugrep' to be installed:
+        Linux:   sudo apt install ugrep
+        Windows: choco install ugrep
+      If 'ugrep' is not found, an error is raised.
+      The following features automatically fall back to the built-in Python engine
+      because ugrep does not support them natively or mapping is unreliable:
+        - --stream mode
+        - --name-only mode
+        - --file mode with AND logic (cross-line AND)
+        - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
+
 Examples:
   zxgrep archive.tar.zst exec task
   zxgrep ./docs exec task
@@ -229,6 +243,8 @@ Examples:
   zxgrep ./docs 'report.*2024' -N -r
   zxgrep ./docs exec task -j 4
   zxgrep archive.tar.zst exec task --stream
+  zxgrep ./docs exec task --ugrep
+  zxgrep ./docs exec task --ugrep --file --or
   zxgrep --clean
 """)
 ```
@@ -245,6 +261,7 @@ macOS might be available, but hasn't been tested yet.
 - [zstd](https://github.com/facebook/zstd) (optional)
 - [poppler](https://poppler.freedesktop.org/) (optional)
 - [calibre](https://calibre-ebook.com/) (optional)
+- [ugrep](https://github.com/Genivia/ugrep) (optional)
 
 ## Installation
 
@@ -254,7 +271,9 @@ macOS might be available, but hasn't been tested yet.
 
 ## Note
 
-Please note that `zxgrep` is intended for personal use and is not designed for performance. If you need better performance, rewrite it in any native language.
+Please note that `zxgrep` is intended for personal use and is not designed for performance.
+
+If you need better performance, try adding the experimental `--ugrep` option.
 
 ## License
 

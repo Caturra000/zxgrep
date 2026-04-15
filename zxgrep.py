@@ -39,7 +39,7 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat -h -s -x -r -l -N -o -O -j --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep -h -s -x -r -l -N -o -O -j --jobs"
 
     if [[ "$prev" == "-o" ]]; then
         compopt -o filenames 2>/dev/null
@@ -66,7 +66,7 @@ _zxgrep() {
     i=1
     while (( i < COMP_CWORD )); do
         case "${COMP_WORDS[i]}" in
-            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|-O)
+            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|-O)
                 ;;
             -o|-j|--jobs|--include|--exclude)
                 ((i++))
@@ -124,6 +124,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] -j 8
   {PROGRAM} INPUT WORD1 [WORD2 ...] --stream
   {PROGRAM} INPUT WORD1 [WORD2 ...] -O --flat
+  {PROGRAM} INPUT WORD1 [WORD2 ...] --ugrep
   {PROGRAM} --install
   {PROGRAM} --print-bash-completion
   {PROGRAM} --clean
@@ -285,6 +286,19 @@ Notes:
           Windows: choco install calibre
         If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
 
+  23) --ugrep:
+      Delegate text search to the 'ugrep' command for significantly better performance.
+      Requires 'ugrep' to be installed:
+        Linux:   sudo apt install ugrep
+        Windows: choco install ugrep
+      If 'ugrep' is not found, an error is raised.
+      The following features automatically fall back to the built-in Python engine
+      because ugrep does not support them natively or mapping is unreliable:
+        - --stream mode
+        - --name-only mode
+        - --file mode with AND logic (cross-line AND)
+        - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
+
 Examples:
   {PROGRAM} archive.tar.zst exec task
   {PROGRAM} ./docs exec task
@@ -309,6 +323,8 @@ Examples:
   {PROGRAM} ./docs 'report.*2024' -N -r
   {PROGRAM} ./docs exec task -j 4
   {PROGRAM} archive.tar.zst exec task --stream
+  {PROGRAM} ./docs exec task --ugrep
+  {PROGRAM} ./docs exec task --ugrep --file --or
   {PROGRAM} --clean
 """)
 
@@ -1199,6 +1215,7 @@ def parse_args(argv):
     excludes = []
     stream = False
     flat = False
+    ugrep = False
 
     stop_opts = False
     i = 0
@@ -1326,6 +1343,10 @@ def parse_args(argv):
                 flat = True
                 i += 1
                 continue
+            elif arg == "--ugrep":
+                ugrep = True
+                i += 1
+                continue
             elif arg.startswith("-"):
                 die(f"Unsupported option: {arg}")
 
@@ -1375,43 +1396,212 @@ def parse_args(argv):
         "filters": filters,
         "stream": stream,
         "flat": flat,
+        "ugrep": ugrep,
     }
+
+
+# ---------------------------------------------------------------------------
+# ugrep integration helpers
+# ---------------------------------------------------------------------------
+
+_UGREP_LINE_RE = re.compile(r'^(.*?):(\d+):(\d+):(.*)$', re.DOTALL)
+
+
+def _parse_ugrep_line(line):
+    m = _UGREP_LINE_RE.match(line)
+    if m:
+        return m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+    return None
+
+
+def _make_item_from_path(fpath, source_info, extracted_root):
+    p = abs_path(fpath)
+    if not p.exists():
+        return None
+    if source_info["kind"] == "archive":
+        if extracted_root is None:
+            return None
+        rel = p.relative_to(extracted_root).as_posix()
+        display_path = rel
+    elif source_info["kind"] == "dir":
+        try:
+            rel = p.relative_to(source_info["path"]).as_posix()
+        except ValueError:
+            rel = p.name
+        display_path = pretty_local_path(p)
+    else:
+        rel = p.name
+        display_path = pretty_local_path(p)
+    return {"rel": rel, "path": str(p), "display_path": display_path}
+
+
+# ---------------------------------------------------------------------------
+# Search engines
+# ---------------------------------------------------------------------------
+
+def _make_opts(args):
+    return {
+        "file_mode": args["file_mode"],
+        "list_files": args["list_files"],
+        "name_only": args["name_only"],
+        "or_mode": args["or_mode"],
+    }
+
+
+def _run_stream(source_info, all_patterns, any_pattern, args, on_result):
+    require_cmd("zstd")
+    filters = args["filters"]
+    opts = _make_opts(args)
+
+    proc = subprocess.Popen(
+        ["zstd", "-d", "-T0", str(source_info["path"]), "-c"],
+        stdout=subprocess.PIPE,
+    )
+    tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
+    try:
+        tf = tarfile.open(fileobj=proc.stdout, mode="r|")
+        for member in tf:
+            if not member.isfile():
+                continue
+            rel = member.name
+            if rel.startswith("./"):
+                rel = rel[2:]
+            if not check_file_filters(rel, filters):
+                continue
+            ef = tf.extractfile(member)
+            if ef is None:
+                continue
+            tmp_path = tmp / "current"
+            with open(str(tmp_path), "wb") as out_f:
+                shutil.copyfileobj(ef, out_f)
+            item = {"rel": rel, "path": str(tmp_path), "display_path": rel}
+            on_result(worker_search_file((item, all_patterns, any_pattern, opts)))
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        tf.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        proc.terminate()
+        proc.wait()
+
+
+def _python_workers(items, all_patterns, any_pattern, args, on_result):
+    opts = _make_opts(args)
+    task_args = [(item, all_patterns, any_pattern, opts) for item in items]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args["jobs"]) as executor:
+        futures = {executor.submit(worker_search_file, arg): arg[0] for arg in task_args}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                on_result(future.result())
+            except Exception:
+                pass
+
+
+def _ugrep_search(roots, source_info, extracted_root, args, on_result):
+    words = args["words"]
+    mode = args["mode"]
+    case_sensitive = args["case_sensitive"]
+    or_mode = args["or_mode"]
+    list_files = args["list_files"]
+    filters = args["filters"]
+
+    cmd = ["ugrep", "--no-messages", "--binary-files=without-match",
+           "-H", "--no-ignore-files", "--hidden"]
+    if source_info["kind"] in ("dir", "archive"):
+        cmd.append("-r")
+    if not case_sensitive:
+        cmd.append("-i")
+    if mode == "exact":
+        cmd.append("-w")
+
+    for ext in _SPECIAL_EXTS:
+        cmd.extend(["-g", f"!*{ext}"])
+    if filters:
+        for pat in filters.get("include", []):
+            cmd.extend(["-g", pat])
+        for pat in filters.get("exclude", []):
+            cmd.extend(["-g", f"!{pat}"])
+
+    if list_files:
+        cmd.append("-l")
+    else:
+        cmd.extend(["-n", "-k", "--color=never"])
+
+    if or_mode:
+        for w in words:
+            cmd.extend(["-e", w])
+    else:
+        for i, w in enumerate(words):
+            cmd.extend(["-e", w])
+            if i < len(words) - 1:
+                cmd.append("--and")
+
+    cmd.extend(roots)
+
+    proc = subprocess.run(cmd, capture_output=True,
+                          encoding="utf-8", errors="replace")
+
+    if proc.returncode == 2:
+        err = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "unknown error"
+        eprint(f"{PROGRAM}: ugrep error: {err}")
+        eprint(f"{PROGRAM}: falling back to Python engine")
+        return False
+
+    if proc.returncode == 0:
+        stdout = proc.stdout or ""
+        if list_files:
+            for f in stdout.splitlines():
+                item = _make_item_from_path(f, source_info, extracted_root)
+                if item:
+                    on_result((item, []))
+        else:
+            results = {}
+            for line in stdout.splitlines():
+                parsed = _parse_ugrep_line(line)
+                if parsed:
+                    fpath, lineno, colno, text = parsed
+                    item = _make_item_from_path(fpath, source_info, extracted_root)
+                    if item:
+                        if fpath not in results:
+                            results[fpath] = (item, [])
+                        results[fpath][1].append((lineno, colno, text + "\n"))
+            for fpath, (item, matches) in results.items():
+                on_result((item, matches))
+
+    return True
 
 
 def run_search(args):
     input_path = args["input_path"]
-    words = args["words"]
-    file_mode = args["file_mode"]
     outdir = args["outdir"]
-    case_sensitive = args["case_sensitive"]
-    mode = args["mode"]
-    or_mode = args["or_mode"]
-    list_files = args["list_files"]
-    name_only = args["name_only"]
     transfer_mode = args["transfer_mode"]
     color_path = args["color_path"]
-    jobs = args["jobs"]
-    filters = args["filters"]
-    stream = args["stream"]
+    list_files = args["list_files"]
+    name_only = args["name_only"]
     flat = args["flat"]
+    stream = args["stream"]
+    file_mode = args["file_mode"]
+    or_mode = args["or_mode"]
+    filters = args["filters"]
 
     source_info = detect_input_kind(input_path)
-
-    all_patterns = build_patterns(words, mode=mode, case_sensitive=case_sensitive)
-    any_pattern = build_highlight_pattern(words, mode=mode, case_sensitive=case_sensitive)
-
+    all_patterns = build_patterns(args["words"], mode=args["mode"],
+                                  case_sensitive=args["case_sensitive"])
+    any_pattern = build_highlight_pattern(args["words"], mode=args["mode"],
+                                          case_sensitive=args["case_sensitive"])
     is_tty = sys.stdout.isatty()
-
-    opts = {
-        "file_mode": file_mode,
-        "list_files": list_files,
-        "name_only": name_only,
-        "or_mode": or_mode,
-    }
 
     if outdir is not None:
         outdir = abs_path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
+
+    use_ugrep = args.get("ugrep", False)
+    if use_ugrep and (stream or name_only or (file_mode and not or_mode)):
+        use_ugrep = False
+    if use_ugrep:
+        require_cmd("ugrep")
 
     found = False
     matched_count = 0
@@ -1426,77 +1616,45 @@ def run_search(args):
                       color_path, is_tty, list_files, name_only, any_pattern, flat)
 
     temp_root = None
-    stream_tmp = None
-    stream_proc = None
 
     try:
         if source_info["kind"] == "archive" and stream:
-            require_cmd("zstd")
-            stream_proc = subprocess.Popen(
-                ["zstd", "-d", "-T0", str(source_info["path"]), "-c"],
-                stdout=subprocess.PIPE,
-            )
-            stream_tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-            tf = tarfile.open(fileobj=stream_proc.stdout, mode="r|")
-            for member in tf:
-                if not member.isfile():
-                    continue
-                rel = member.name
-                if rel.startswith("./"):
-                    rel = rel[2:]
-                if not check_file_filters(rel, filters):
-                    continue
-                ef = tf.extractfile(member)
-                if ef is None:
-                    continue
-                tmp_path = stream_tmp / "current"
-                with open(str(tmp_path), "wb") as out_f:
-                    shutil.copyfileobj(ef, out_f)
-                item = {"rel": rel, "path": str(tmp_path), "display_path": rel}
-                on_result(worker_search_file((item, all_patterns, any_pattern, opts)))
-                try:
-                    tmp_path.unlink()
-                except FileNotFoundError:
-                    pass
-            tf.close()
+            _run_stream(source_info, all_patterns, any_pattern, args, on_result)
+            return found
+
+        extracted_root = None
+        if source_info["kind"] == "archive":
+            temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(pick_tmp_root())))
+            extract_archive(source_info["path"], temp_root)
+            extracted_root = temp_root
+
+        exclude_dir = None
+        if source_info["kind"] == "dir" and outdir is not None:
+            if path_is_within(str(outdir), str(source_info["path"])):
+                exclude_dir = outdir
+
+        if use_ugrep:
+            roots = [extracted_root.as_posix() if extracted_root
+                     else source_info["path"].as_posix()]
+            ok = _ugrep_search(roots, source_info, extracted_root, args, on_result)
+
+            if not ok:
+                items = build_source_items(source_info, extracted_root,
+                                           exclude_dir=exclude_dir, filters=filters)
+                if items:
+                    _python_workers(items, all_patterns, any_pattern, args, on_result)
+            else:
+                all_items = build_source_items(source_info, extracted_root,
+                                               exclude_dir=exclude_dir, filters=filters)
+                special_items = [i for i in all_items
+                                 if Path(i["path"]).suffix.lower() in _SPECIAL_EXTS]
+                if special_items:
+                    _python_workers(special_items, all_patterns, any_pattern, args, on_result)
         else:
-            extracted_root = None
-            if source_info["kind"] == "archive":
-                temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(pick_tmp_root())))
-                extract_archive(source_info["path"], temp_root)
-                extracted_root = temp_root
-
-            exclude_dir = None
-            if source_info["kind"] == "dir" and outdir is not None:
-                if path_is_within(str(outdir), str(source_info["path"])):
-                    exclude_dir = outdir
-
-            items = build_source_items(
-                source_info,
-                extracted_root=extracted_root,
-                exclude_dir=exclude_dir,
-                filters=filters,
-            )
-
-            if not items:
-                return False
-
-            task_args = [
-                (item, all_patterns, any_pattern, opts)
-                for item in items
-            ]
-
-            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
-                future_to_item = {
-                    executor.submit(worker_search_file, arg): arg[0]
-                    for arg in task_args
-                }
-                for future in concurrent.futures.as_completed(future_to_item):
-                    try:
-                        result = future.result()
-                    except Exception:
-                        continue
-                    on_result(result)
+            items = build_source_items(source_info, extracted_root,
+                                       exclude_dir=exclude_dir, filters=filters)
+            if items:
+                _python_workers(items, all_patterns, any_pattern, args, on_result)
 
         if outdir is not None and matched_count > 0:
             action_text = "copied" if transfer_mode == "copy" else "moved"
@@ -1507,11 +1665,6 @@ def run_search(args):
     finally:
         if temp_root is not None:
             shutil.rmtree(temp_root, ignore_errors=True)
-        if stream_tmp is not None:
-            shutil.rmtree(stream_tmp, ignore_errors=True)
-        if stream_proc is not None:
-            stream_proc.terminate()
-            stream_proc.wait()
 
 
 def enable_windows_ansi():
