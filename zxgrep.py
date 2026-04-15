@@ -889,6 +889,16 @@ def _process_file(args):
         return None
 
 
+def _process_batch(batch_args):
+    items, all_pats, any_pat, opts = batch_args
+    results = []
+    for item in items:
+        result = _process_file((item, all_pats, any_pat, opts))
+        if result is not None:
+            results.append(result)
+    return results
+
+
 # Search engines
 
 def _run_stream(info, all_pats, any_pat, args, callback):
@@ -921,15 +931,20 @@ def _run_stream(info, all_pats, any_pat, args, callback):
 
 def _run_python(items, all_pats, any_pat, args, callback):
     opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"]}
-    task_args = [(item, all_pats, any_pat, opts) for item in items]
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args["jobs"]) as pool:
-        futures = {pool.submit(_process_file, a): a[0] for a in task_args}
+    jobs = args["jobs"]
+    n = len(items)
+    chunk_size = max(1, n // (jobs * 4))
+    batches = []
+    for i in range(0, n, chunk_size):
+        batches.append((items[i:i + chunk_size], all_pats, any_pat, opts))
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(_process_batch, b): b for b in batches}
         for future in concurrent.futures.as_completed(futures):
             try:
-                callback(future.result())
+                for result in future.result():
+                    callback(result)
             except Exception:
                 pass
-
 
 def _make_ugrep_item(fpath, info, extracted):
     p = Path(os.path.abspath(fpath))
