@@ -7,6 +7,7 @@ import sys
 import tarfile
 import fnmatch
 import shutil
+import stat
 import tempfile
 import subprocess
 import concurrent.futures
@@ -585,23 +586,27 @@ def _should_include(rel, filters):
 
 
 def _walk_dir(root, filters, exclude=None):
-    root = Path(os.path.abspath(root))
-    ex = Path(os.path.abspath(exclude)) if exclude else None
-    for cur, dirs, files in os.walk(str(root), followlinks=False):
+    root = os.path.abspath(root)
+    ex = os.path.abspath(exclude) if exclude else None
+    for cur, dirs, files in os.walk(root, followlinks=False):
         if ex:
-            dirs[:] = sorted(d for d in dirs if not _is_within(os.path.join(cur, d), str(ex)))
+            dirs[:] = sorted(d for d in dirs if not _is_within(os.path.join(cur, d), ex))
         else:
             dirs[:] = sorted(dirs)
         for name in sorted(files):
-            p = Path(cur) / name
-            if p.is_symlink() or not p.is_file():
+            p = os.path.join(cur, name)
+            try:
+                st = os.lstat(p)
+            except OSError:
                 continue
-            if ex and _is_within(str(p), str(ex)):
+            if not stat.S_ISREG(st.st_mode):
                 continue
-            rel = p.relative_to(root).as_posix()
+            if ex and _is_within(p, ex):
+                continue
+            rel = os.path.relpath(p, root).replace(os.sep, "/")
             if not _should_include(rel, filters):
                 continue
-            yield {"rel": rel, "path": str(p), "display": _display(p)}
+            yield {"rel": rel, "path": p, "display": _display(p)}
 
 
 def _walk_archive(root, filters):
@@ -622,6 +627,37 @@ def _walk_single(path):
     p = Path(os.path.abspath(os.path.expanduser(str(path))))
     if p.is_file():
         yield {"rel": p.name, "path": str(p), "display": _display(p)}
+
+
+def _find_specials(info, extracted, filters, exclude):
+    root = str(extracted if extracted else info["path"])
+    results = []
+    for cur, dirs, files in os.walk(root, followlinks=False):
+        if exclude:
+            dirs[:] = [d for d in dirs if not _is_within(os.path.join(cur, d), str(exclude))]
+        for name in files:
+            if not (name.endswith(".pdf") or name.endswith(".epub") or
+                    name.endswith(".mobi") or name.endswith(".azw3")):
+                continue
+            p = os.path.join(cur, name)
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            pp = Path(p)
+            if info["kind"] == "archive":
+                rel = pp.relative_to(extracted).as_posix()
+                display = rel
+            elif info["kind"] == "dir":
+                if exclude and _is_within(p, str(exclude)):
+                    continue
+                rel = pp.relative_to(info["path"]).as_posix()
+                display = _display(pp)
+            else:
+                rel = pp.name
+                display = _display(pp)
+            if not _should_include(rel, filters):
+                continue
+            results.append({"rel": rel, "path": p, "display": display})
+    return results
 
 
 # Pattern compilation
@@ -967,13 +1003,14 @@ def _make_ugrep_item(fpath, info, extracted):
     return {"rel": rel, "path": str(p), "display": display}
 
 
+_UGREP_LINE_RE = re.compile(r"^(.*?):(\d+):(\d+):(.*)$", re.DOTALL)
+
 def _run_ugrep(info, extracted, args, callback):
     if not shutil.which("ugrep"):
         die("Missing required command: ugrep")
 
     root = (extracted if extracted else info["path"]).as_posix()
-    cmd = ["ugrep", "--no-messages", "--binary-files=without-match",
-           "-H", "--no-ignore-files", "--hidden"]
+    cmd = ["ugrep", "--no-messages", "--binary-files=without-match", "-H"]
     if info["kind"] in ("dir", "archive"):
         cmd.append("-r")
     if not args["case"]:
@@ -1018,18 +1055,19 @@ def _run_ugrep(info, extracted, args, callback):
             if item:
                 callback((item, []))
     else:
-        line_re = re.compile(r'^(.*?):(\d+):(\d+):(.*)$', re.DOTALL)
         results = {}
         for line in stdout.splitlines():
-            m = line_re.match(line)
+            m = _UGREP_LINE_RE.match(line)
             if not m:
                 continue
             fp, ln, cn, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
-            item = _make_ugrep_item(fp, info, extracted)
-            if item:
-                if fp not in results:
+            if fp not in results:
+                item = _make_ugrep_item(fp, info, extracted)
+                if item:
                     results[fp] = (item, [])
-                results[fp][1].append((ln, cn, text + "\n"))
+                else:
+                    continue
+            results[fp][1].append((ln, cn, text + "\n"))
         for item, matches in results.values():
             callback((item, matches))
     return True
@@ -1074,13 +1112,6 @@ def _run(args):
             if _is_within(str(outdir), str(info["path"])):
                 exclude = outdir
 
-        if info["kind"] == "archive":
-            items = list(_walk_archive(extracted, args["filters"]))
-        elif info["kind"] == "dir":
-            items = list(_walk_dir(info["path"], args["filters"], exclude))
-        else:
-            items = list(_walk_single(args["input"]))
-
         use_ugrep = args["ugrep"] and not args["stream"] and not args["name"]
         if use_ugrep and args["file"] and not args["or"]:
             use_ugrep = False
@@ -1090,9 +1121,16 @@ def _run(args):
             ugrep_ok = _run_ugrep(info, extracted, args, callback)
 
         if not ugrep_ok:
-            _run_python(items, all_pats, any_pat, args, callback)
+            if info["kind"] == "archive":
+                items = list(_walk_archive(extracted, args["filters"]))
+            elif info["kind"] == "dir":
+                items = list(_walk_dir(info["path"], args["filters"], exclude))
+            else:
+                items = list(_walk_single(args["input"]))
+            if items:
+                _run_python(items, all_pats, any_pat, args, callback)
         else:
-            specials = [i for i in items if Path(i["path"]).suffix.lower() in SPECIAL_EXTS]
+            specials = _find_specials(info, extracted, args["filters"], exclude)
             if specials:
                 _run_python(specials, all_pats, any_pat, args, callback)
 
