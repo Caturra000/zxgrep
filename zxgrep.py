@@ -26,6 +26,8 @@ RESET = "\033[0m"
 LEFT_BOUNDARY = r"(?<![0-9A-Za-z_])"
 RIGHT_BOUNDARY = r"(?![0-9A-Za-z_])"
 
+SPECIAL_EXTS = ('.pdf', '.epub', '.mobi', '.azw3')
+
 
 BASH_COMPLETION_SCRIPT = r'''# bash completion for zxgrep
 _zxgrep() {
@@ -329,13 +331,215 @@ Examples:
 """)
 
 
-def require_cmd(*cmds):
-    for cmd in cmds:
-        if shutil.which(cmd) is None:
-            die(f"Missing required command: {cmd}")
+# Options registry: (long, short, takes_value, accumulative, default, conflicts)
+
+_OPTIONS = [
+    ("--help",                  "-h", False, False, False,  None),
+    ("--install",               None, False, False, False,  None),
+    ("--print-bash-completion", None, False, False, False,  None),
+    ("--clean",                 None, False, False, False,  None),
+    ("--file",                  None, False, False, False,  None),
+    ("--case-sensitive",        "-s", False, False, False,  None),
+    ("--exact",                 "-x", False, False, False,  ("--regex",)),
+    ("--regex",                 "-r", False, False, False,  ("--exact",)),
+    ("--or",                    None, False, False, False,  None),
+    ("--include",               None, True,  True,  [],     None),
+    ("--exclude",               None, True,  True,  [],     None),
+    ("--list-files",            "-l", False, False, False,  None),
+    ("--name-only",             "-N", False, False, False,  None),
+    ("--color-path",            None, False, False, True,   None),
+    ("--no-color-path",         None, False, False, False,  None),
+    ("--copy",                  None, False, False, False,  ("--move",)),
+    ("--move",                  None, False, False, False,  ("--copy",)),
+    ("--outdir",                "-o", True,  False, None,   ("--auto-outdir",)),
+    ("--auto-outdir",           "-O", False, False, False,  ("--outdir",)),
+    ("--jobs",                  "-j", True,  False, None,   None),
+    ("--stream",                None, False, False, False,  None),
+    ("--flat",                  None, False, False, False,  None),
+    ("--ugrep",                 None, False, False, False,  None),
+]
+
+_OPT_BY_FLAG = {}
+for _o in _OPTIONS:
+    _OPT_BY_FLAG[_o[0]] = _o
+    if _o[1]:
+        _OPT_BY_FLAG[_o[1]] = _o
+
+_STANDALONE = {
+    "-h": "help", "--help": "help",
+    "--install": "install",
+    "--print-bash-completion": "print-completion",
+    "--clean": "clean",
+}
+
+_ACTION_FLAGS = ("--install", "--print-bash-completion", "--clean")
+
+_DERIVATIONS = [
+    # (trigger, target, value)
+    ("--name-only", "--file", True),
+    ("--name-only", "--list-files", True),
+]
+
+_REQUIRES_OUTDIR = ("--flat", "--copy", "--move")
 
 
-def pick_tmp_root():
+def _parse_jobs(raw):
+    try:
+        j = int(raw)
+        if j < 1: raise ValueError
+        return j
+    except (ValueError, TypeError):
+        die(f"Invalid process count: {raw}")
+
+
+def _parse(argv):
+    if not argv:
+        usage(); raise SystemExit(1)
+
+    if len(argv) == 1 and argv[0] in _STANDALONE:
+        return {"action": _STANDALONE[argv[0]]}
+
+    args = {}
+    for o in _OPTIONS:
+        long, _, _, accum, default, _ = o
+        args[long] = list(default) if accum else default
+
+    words, input_path, stop = [], None, False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            stop = True; i += 1; continue
+        if not stop and arg in _OPT_BY_FLAG:
+            opt = _OPT_BY_FLAG[arg]
+            long, _, takes_val, accum, _, _ = opt
+            if takes_val:
+                i += 1
+                if i >= len(argv):
+                    die(f"{arg} requires a value")
+                if accum:
+                    args[long].append(argv[i])
+                else:
+                    args[long] = argv[i]
+            else:
+                args[long] = True
+            i += 1; continue
+        if not stop and arg.startswith("-"):
+            die(f"Unsupported option: {arg}")
+        if input_path is None:
+            input_path = arg
+        else:
+            words.append(arg)
+        i += 1
+
+    if args["--help"]:
+        usage(); raise SystemExit(0)
+    conflict = next((f for f in _ACTION_FLAGS if args[f]), None)
+    if conflict:
+        die(f"{conflict} cannot be used together with search arguments")
+    if input_path is None:
+        die("Missing INPUT")
+    if not words:
+        die("At least one keyword/expression is required")
+    if any(w == "" for w in words):
+        die("Keyword/expression cannot be empty")
+
+    for o in _OPTIONS:
+        long, _, _, _, _, conflicts = o
+        if conflicts and args[long]:
+            for c in conflicts:
+                if args[c]:
+                    die(f"{long} and {c} cannot be used together")
+
+    for trigger, target, value in _DERIVATIONS:
+        if args[trigger]:
+            args[target] = value
+
+    if args["--no-color-path"]:
+        args["--color-path"] = False
+
+    if args["--auto-outdir"]:
+        safe = [re.sub(r"[^\w._+-]", "_", w) for w in words]
+        args["--outdir"] = os.path.abspath(f"zxgrep_{'+'.join(safe)}")
+
+    outdir = Path(os.path.abspath(os.path.expanduser(str(args["--outdir"])))) if args["--outdir"] else None
+
+    for flag in _REQUIRES_OUTDIR:
+        if args[flag] and outdir is None:
+            die(f"{flag} can only be used with -o or -O")
+
+    jobs = _parse_jobs(args["--jobs"]) if args["--jobs"] is not None else (os.cpu_count() or 4)
+
+    filters = None
+    if args["--include"] or args["--exclude"]:
+        filters = {"include": args["--include"], "exclude": args["--exclude"]}
+
+    mode = "exact" if args["--exact"] else "regex" if args["--regex"] else "substr"
+
+    return {
+        "action": "search",
+        "input": Path(os.path.abspath(os.path.expanduser(input_path))),
+        "words": words, "file": args["--file"], "outdir": outdir,
+        "case": args["--case-sensitive"], "mode": mode, "or": args["--or"],
+        "list": args["--list-files"], "name": args["--name-only"],
+        "move": args["--move"], "color": args["--color-path"],
+        "jobs": jobs, "filters": filters, "stream": args["--stream"],
+        "flat": args["--flat"], "ugrep": args["--ugrep"],
+    }
+
+
+# File utilities
+
+def _is_within(path, parent):
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+
+def _display(path):
+    p = Path(os.path.abspath(path))
+    try:
+        rel = p.relative_to(Path(os.path.abspath("."))).as_posix()
+        return "./" + rel if rel != "." else "."
+    except ValueError:
+        return p.as_posix()
+
+
+def _is_probably_text(path):
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" not in f.read(8192)
+    except Exception:
+        return False
+
+
+def _safe_transfer(src, dst, do_move):
+    src, dst = Path(os.path.abspath(src)), Path(os.path.abspath(dst))
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    (shutil.move if do_move else shutil.copy2)(str(src), str(dst))
+
+
+def _resolve_flat(outdir, rel):
+    name = Path(rel).name
+    target = outdir / name
+    if not target.exists():
+        return target
+    stem, suffix = Path(name).stem, Path(name).suffix
+    for n in range(1, 10000):
+        target = outdir / f"{stem}.conflict-{n}{suffix}"
+        if not target.exists():
+            return target
+
+
+def _pick_tmp_root():
     if sys.platform != "win32":
         shm = Path("/dev/shm")
         if shm.exists() and os.access(str(shm), os.W_OK):
@@ -343,595 +547,564 @@ def pick_tmp_root():
     return Path(tempfile.gettempdir())
 
 
-def abs_path(p):
-    return Path(os.path.abspath(os.path.expanduser(str(p))))
-
-
-def sanitize_component(s):
-    return re.sub(r"[^\w._+-]", "_", s)
-
-
-def auto_outdir_name(words):
-    return "zxgrep_" + "+".join(sanitize_component(w) for w in words)
-
-
-def path_is_within(path, parent):
-    try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
-    except ValueError:
-        return False
-
-
-def is_probably_text_file(path):
-    try:
-        with open(path, "rb") as f:
-            chunk = f.read(8192)
-        return b"\x00" not in chunk
-    except Exception:
-        return False
-
-
-def pretty_local_path(path):
-    path = abs_path(path)
-    cwd = abs_path(".")
-    try:
-        rel = path.relative_to(cwd)
-        rel_s = rel.as_posix()
-        if rel_s == ".":
-            return "."
-        return "./" + rel_s
-    except ValueError:
-        return path.as_posix()
-
-
-def maybe_color_path_text(text, color_path, is_tty):
-    if color_path and is_tty:
-        return f"{CYAN}{text}{RESET}"
-    return text
-
-
-def make_location_label(display_path, lineno, colno, color_path, is_tty):
-    text = f"{display_path}:{lineno}:{colno}"
-    return maybe_color_path_text(text, color_path, is_tty)
-
-
-def check_file_filters(rel_path, filters):
-    if not filters:
-        return True
-    basename = Path(rel_path).name
-    for pat in filters.get("exclude", []):
-        if fnmatch.fnmatch(basename, pat):
-            return False
-        if fnmatch.fnmatch(rel_path, pat):
-            return False
-    includes = filters.get("include", [])
-    if includes:
-        return any(fnmatch.fnmatch(basename, pat) for pat in includes)
-    return True
-
-
-def detect_input_kind(input_path):
-    p = abs_path(input_path)
+def _detect(path):
+    p = Path(os.path.abspath(os.path.expanduser(str(path))))
     if not p.exists():
         die(f"Input does not exist: {p}")
     if p.is_dir():
         return {"kind": "dir", "path": p}
     if p.is_file():
-        if p.name.endswith(".tar.zst"):
-            return {"kind": "archive", "path": p}
-        return {"kind": "file", "path": p}
+        return {"kind": "archive" if p.name.endswith(".tar.zst") else "file", "path": p}
     die(f"Unsupported input type: {p}")
 
 
-def extract_archive(archive, dest):
-    require_cmd("zstd")
-    proc = subprocess.Popen(
-        ["zstd", "-d", "-T0", str(archive), "-c"],
-        stdout=subprocess.PIPE,
-    )
+def _extract_archive(archive, dest):
+    shutil.which("zstd") or die("Missing required command: zstd")
+    proc = subprocess.Popen(["zstd", "-d", "-T0", str(archive), "-c"], stdout=subprocess.PIPE)
     try:
         with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
             tf.extractall(path=str(dest))
     except Exception:
-        proc.terminate()
-        proc.wait()
-        raise
+        proc.terminate(); proc.wait(); raise
     proc.wait()
     if proc.returncode != 0:
         die(f"zstd decompression failed with exit code {proc.returncode}")
 
 
-def iter_dir_files(root, exclude_dir=None, filters=None):
-    root = abs_path(root)
-    exclude_abs = abs_path(exclude_dir) if exclude_dir is not None else None
+# File iteration
 
-    for current, dirnames, filenames in os.walk(str(root), followlinks=False):
-        if exclude_abs is not None:
-            new_dirnames = []
-            for d in dirnames:
-                full = os.path.join(current, d)
-                if path_is_within(full, str(exclude_abs)):
-                    continue
-                new_dirnames.append(d)
-            dirnames[:] = sorted(new_dirnames)
+def _should_include(rel, filters):
+    if not filters:
+        return True
+    name = Path(rel).name
+    for pat in filters.get("exclude", []):
+        if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel, pat):
+            return False
+    inc = filters.get("include", [])
+    return not inc or any(fnmatch.fnmatch(name, p) for p in inc)
+
+
+def _walk_dir(root, filters, exclude=None):
+    root = Path(os.path.abspath(root))
+    ex = Path(os.path.abspath(exclude)) if exclude else None
+    for cur, dirs, files in os.walk(str(root), followlinks=False):
+        if ex:
+            dirs[:] = sorted(d for d in dirs if not _is_within(os.path.join(cur, d), str(ex)))
         else:
-            dirnames[:] = sorted(dirnames)
-
-        filenames.sort()
-
-        for name in filenames:
-            p = Path(current) / name
-            if exclude_abs is not None and path_is_within(str(p), str(exclude_abs)):
+            dirs[:] = sorted(dirs)
+        for name in sorted(files):
+            p = Path(cur) / name
+            if p.is_symlink() or not p.is_file():
                 continue
-            if p.is_symlink():
-                continue
-            if not p.is_file():
+            if ex and _is_within(str(p), str(ex)):
                 continue
             rel = p.relative_to(root).as_posix()
-            if not check_file_filters(rel, filters):
+            if not _should_include(rel, filters):
                 continue
-            yield {
-                "rel": rel,
-                "path": str(p),
-                "display_path": pretty_local_path(p),
-            }
+            yield {"rel": rel, "path": str(p), "display": _display(p)}
 
 
-def iter_archive_files(extracted_root, filters=None):
-    extracted_root = abs_path(extracted_root)
-    for current, dirnames, filenames in os.walk(str(extracted_root), followlinks=False):
-        dirnames[:] = sorted(dirnames)
-        filenames.sort()
-
-        for name in filenames:
-            p = Path(current) / name
-            if p.is_symlink():
+def _walk_archive(root, filters):
+    root = Path(os.path.abspath(root))
+    for cur, dirs, files in os.walk(str(root), followlinks=False):
+        dirs[:] = sorted(dirs)
+        for name in sorted(files):
+            p = Path(cur) / name
+            if p.is_symlink() or not p.is_file():
                 continue
-            if not p.is_file():
+            rel = p.relative_to(root).as_posix()
+            if not _should_include(rel, filters):
                 continue
-            rel = p.relative_to(extracted_root).as_posix()
-            if not check_file_filters(rel, filters):
-                continue
-            yield {
-                "rel": rel,
-                "path": str(p),
-                "display_path": rel,
-            }
+            yield {"rel": rel, "path": str(p), "display": rel}
 
 
-def iter_single_file(file_path):
-    p = abs_path(file_path)
+def _walk_single(path):
+    p = Path(os.path.abspath(os.path.expanduser(str(path))))
     if p.is_file():
-        yield {
-            "rel": p.name,
-            "path": str(p),
-            "display_path": pretty_local_path(p),
-        }
+        yield {"rel": p.name, "path": str(p), "display": _display(p)}
 
 
-def compile_pattern(word, mode, case_sensitive):
-    flags = 0 if case_sensitive else re.IGNORECASE
+# Pattern compilation
 
-    if mode == "substr":
-        expr = re.escape(word)
-    elif mode == "exact":
-        expr = LEFT_BOUNDARY + re.escape(word) + RIGHT_BOUNDARY
-    elif mode == "regex":
-        expr = word
-    else:
-        die(f"Internal error: unknown match mode {mode}")
+_MODE_EXPR = {
+    "substr": lambda w: re.escape(w),
+    "exact":  lambda w: LEFT_BOUNDARY + re.escape(w) + RIGHT_BOUNDARY,
+    "regex":  lambda w: w,
+}
 
+
+def _compile_one(word, mode, case):
+    flags = 0 if case else re.IGNORECASE
     try:
-        pat = re.compile(expr, flags)
+        pat = re.compile(_MODE_EXPR[mode](word), flags)
     except re.error as ex:
         die(f"Regex compilation failed: {word!r}: {ex}")
-
     if mode == "regex":
         m = pat.search("")
         if m is not None and m.start() == m.end():
             die(f"Regex is not allowed to match empty string: {word!r}")
-
     return pat
 
 
-def build_patterns(words, mode, case_sensitive):
-    return [compile_pattern(w, mode, case_sensitive) for w in words]
+def _compile_all(words, mode, case):
+    return [_compile_one(w, mode, case) for w in words]
 
 
-def build_highlight_pattern(words, mode, case_sensitive):
-    flags = 0 if case_sensitive else re.IGNORECASE
-
+def _compile_any(words, mode, case):
+    flags = 0 if case else re.IGNORECASE
     if mode == "substr":
-        uniq = list(dict.fromkeys(words))
-        uniq.sort(key=len, reverse=True)
+        uniq = sorted(dict.fromkeys(words), key=len, reverse=True)
         expr = "|".join(re.escape(w) for w in uniq)
     elif mode == "exact":
-        uniq = list(dict.fromkeys(words))
-        uniq.sort(key=len, reverse=True)
-        body = "|".join(re.escape(w) for w in uniq)
-        expr = LEFT_BOUNDARY + f"(?:{body})" + RIGHT_BOUNDARY
-    elif mode == "regex":
-        parts = [f"(?:{w})" for w in words]
-        expr = "|".join(parts)
+        uniq = sorted(dict.fromkeys(words), key=len, reverse=True)
+        expr = LEFT_BOUNDARY + "(?:" + "|".join(re.escape(w) for w in uniq) + ")" + RIGHT_BOUNDARY
     else:
-        die(f"Internal error: unknown match mode {mode}")
-
+        expr = "|".join(f"(?:{w})" for w in words)
     try:
-        pat = re.compile(expr, flags)
+        return re.compile(expr, flags)
     except re.error as ex:
         die(f"Highlight regex compilation failed: {ex}")
 
-    return pat
+
+# Output helpers
+
+def _colorize(line, pat):
+    return pat.sub(lambda m: f"{RED}{m.group(0)}{RESET}", line.rstrip("\r\n"))
 
 
-def colorize_line(line, any_pattern, colorize=True):
-    text = line.rstrip("\r\n")
-    if colorize:
-        return any_pattern.sub(lambda m: f"{RED}{m.group(0)}{RESET}", text)
+def _column(line, pat):
+    m = pat.search(line)
+    return (m.start() + 1) if m else 1
+
+
+def _label(path, ln, cn, color, tty):
+    text = f"{path}:{ln}:{cn}"
+    return f"{CYAN}{text}{RESET}" if color and tty else text
+
+
+def _output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat, flat):
+    if outdir:
+        target = _resolve_flat(outdir, item["rel"]) if flat else outdir / item["rel"]
+        _safe_transfer(item["path"], target, do_move)
+        display = _display(target)
     else:
-        return text
+        display = item["display"]
 
-
-def first_match_column(line, any_pattern):
-    m = any_pattern.search(line)
-    if m is None:
-        return 1
-    return m.start() + 1
-
-
-def remove_path_if_exists(path):
-    path = abs_path(path)
-    if path.exists() or path.is_symlink():
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-
-
-def safe_move(src, dst):
-    src = abs_path(src)
-    dst = abs_path(dst)
-
-    if os.path.abspath(src) == os.path.abspath(dst):
-        return
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    remove_path_if_exists(dst)
-    shutil.move(str(src), str(dst))
-
-
-def safe_copy(src, dst):
-    src = abs_path(src)
-    dst = abs_path(dst)
-
-    if os.path.abspath(src) == os.path.abspath(dst):
-        return
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    remove_path_if_exists(dst)
-    shutil.copy2(str(src), str(dst))
-
-
-def safe_transfer(src, dst, transfer_mode):
-    if transfer_mode == "copy":
-        safe_copy(src, dst)
-    elif transfer_mode == "move":
-        safe_move(src, dst)
+    if is_list or is_name:
+        text = f"{CYAN}{display}{RESET}" if color and tty else display
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
     else:
-        die(f"Internal error: unknown output mode {transfer_mode}")
+        for ln, cn, line in matches:
+            prefix = _label(display, ln, cn, color, tty)
+            colored = _colorize(line, any_pat) if tty else line.rstrip("\r\n")
+            sys.stdout.write(f"{prefix}: {colored}\n")
+            sys.stdout.flush()
 
 
-def resolve_flat_target(outdir, rel_path):
-    basename = Path(rel_path).name
-    target = outdir / basename
+# Special file extraction
 
-    if not target.exists():
-        return target
-
-    stem = Path(basename).stem
-    suffix = Path(basename).suffix
-    n = 1
-    while True:
-        new_name = f"{stem}.conflict-{n}{suffix}"
-        target = outdir / new_name
-        if not target.exists():
-            return target
-        n += 1
-
-
-def build_source_items(source_info, extracted_root=None, exclude_dir=None, filters=None):
-    kind = source_info["kind"]
-
-    if kind == "archive":
-        if extracted_root is None:
-            die("Internal error: archive mode missing extracted_root")
-        return list(iter_archive_files(extracted_root, filters=filters))
-
-    if kind == "dir":
-        return list(iter_dir_files(source_info["path"], exclude_dir=exclude_dir, filters=filters))
-
-    if kind == "file":
-        return list(iter_single_file(source_info["path"]))
-
-    die(f"Internal error: unknown input kind {kind}")
-
-
-def _extract_pdf_lines(path):
-    if shutil.which("pdftotext") is None:
+def _extract_pdf(path):
+    if not shutil.which("pdftotext"):
         return None
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxg_pdf_")
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxgrep_pdf_")
         os.close(fd)
-        try:
-            r = subprocess.run(
-                ["pdftotext", "-enc", "UTF-8", "-layout", str(path), tmp],
-                capture_output=True,
-            )
-            if r.returncode != 0:
-                return None
-            with open(tmp, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            return lines if lines else None
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        r = subprocess.run(["pdftotext", "-enc", "UTF-8", "-layout", str(path), tmp], capture_output=True)
+        if r.returncode != 0:
+            return None
+        with open(tmp, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return lines or None
     except Exception:
         return None
+    finally:
+        try: os.unlink(tmp)
+        except OSError: pass
 
 
-class _EPUBTextExtractor(HTMLParser):
-    _BLOCK_TAGS = frozenset({
-        'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-        'li', 'tr', 'blockquote', 'section', 'article', 'header',
-        'footer', 'nav', 'aside', 'main', 'figure', 'figcaption',
-        'details', 'summary', 'dl', 'dt', 'dd', 'ul', 'ol', 'table',
-        'thead', 'tbody', 'tfoot', 'th', 'td', 'hr', 'pre',
+class _EPUBParser(HTMLParser):
+    _BLOCK = frozenset({
+        'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr',
+        'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside',
+        'main', 'figure', 'figcaption', 'details', 'summary', 'dl', 'dt', 'dd',
+        'ul', 'ol', 'table', 'thead', 'tbody', 'tfoot', 'th', 'td', 'hr', 'pre',
     })
-    _SKIP_TAGS = frozenset({'script', 'style', 'head'})
+    _SKIP = frozenset({'script', 'style', 'head'})
 
     def __init__(self):
         super().__init__()
-        self.parts = []
-        self._skip_depth = 0
+        self._parts = []
+        self._skip = 0
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
-        if t in self._SKIP_TAGS:
-            self._skip_depth += 1
-        if t in self._BLOCK_TAGS:
-            self.parts.append('\n')
+        if t in self._SKIP: self._skip += 1
+        if t in self._BLOCK: self._parts.append('\n')
 
     def handle_endtag(self, tag):
         t = tag.lower()
-        if t in self._SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
-        if t in self._BLOCK_TAGS:
-            self.parts.append('\n')
+        if t in self._SKIP: self._skip = max(0, self._skip - 1)
+        if t in self._BLOCK: self._parts.append('\n')
 
     def handle_data(self, data):
-        if self._skip_depth == 0:
-            self.parts.append(data)
+        if self._skip == 0:
+            self._parts.append(data)
 
 
-def _extract_epub_lines(path):
+def _extract_epub(path):
     try:
-        with zipfile.ZipFile(path, 'r') as zf:
-            names = zf.namelist()
-            content_files = [
-                n for n in names
-                if n.lower().endswith(('.html', '.htm', '.xhtml'))
-                and not n.startswith('META-INF/')
-                and n != 'mimetype'
-            ]
-            content_files.sort()
-
-            extractor = _EPUBTextExtractor()
-            for cf in content_files:
+        with zipfile.ZipFile(path, "r") as zf:
+            files = sorted(n for n in zf.namelist()
+                           if n.lower().endswith(('.html', '.htm', '.xhtml'))
+                           and not n.startswith('META-INF/') and n != 'mimetype')
+            parser = _EPUBParser()
+            for cf in files:
                 try:
                     raw = zf.read(cf)
                     text = None
                     for enc in ('utf-8', 'latin-1'):
                         try:
-                            text = raw.decode(enc)
-                            break
+                            text = raw.decode(enc); break
                         except UnicodeDecodeError:
                             continue
-                    if text is None:
-                        continue
-                    extractor.feed(text)
+                    if text:
+                        parser.feed(text)
                 except Exception:
                     continue
-
-            full_text = ''.join(extractor.parts)
-            lines = [line + '\n' for line in full_text.split('\n')]
-            return lines if any(line.strip() for line in lines) else None
+            full = ''.join(parser._parts)
+            lines = [l + '\n' for l in full.split('\n')]
+            return lines if any(l.strip() for l in lines) else None
     except Exception:
         return None
 
 
-def _extract_mobi_azw3_lines(path):
-    if shutil.which("ebook-convert") is None:
+def _extract_ebook(path):
+    if not shutil.which("ebook-convert"):
         return None
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxg_eb_")
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxgrep_ebook_")
         os.close(fd)
-        try:
-            r = subprocess.run(
-                ["ebook-convert", str(path), tmp],
-                capture_output=True,
-                timeout=120,
-            )
-            if r.returncode != 0:
-                return None
-            with open(tmp, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            return lines if lines else None
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        r = subprocess.run(["ebook-convert", str(path), tmp], capture_output=True, timeout=120)
+        if r.returncode != 0:
+            return None
+        with open(tmp, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return lines or None
     except Exception:
         return None
+    finally:
+        try: os.unlink(tmp)
+        except OSError: pass
 
 
-_SPECIAL_EXTS = ('.pdf', '.epub', '.mobi', '.azw3')
+_EXTRACTORS = {
+    ".pdf": _extract_pdf,
+    ".epub": _extract_epub,
+    ".mobi": _extract_ebook,
+    ".azw3": _extract_ebook,
+}
 
 
-def _get_special_lines(path):
-    suffix = Path(path).suffix.lower()
-    if suffix == '.pdf':
-        return _extract_pdf_lines(path)
-    elif suffix == '.epub':
-        return _extract_epub_lines(path)
-    elif suffix in ('.mobi', '.azw3'):
-        return _extract_mobi_azw3_lines(path)
-    return None
+def _extract_lines(path):
+    return _EXTRACTORS.get(Path(path).suffix.lower(), lambda _: None)(path)
 
 
-def worker_search_file(args):
-    item, all_patterns, any_pattern, opts = args
+# Search worker
 
+def _process_file(args):
+    item, all_pats, any_pat, opts = args
     path = item["path"]
-    file_mode = opts["file_mode"]
-    list_files = opts["list_files"]
-    name_only = opts["name_only"]
-    or_mode = opts["or_mode"]
+    combine = any if opts["or"] else all
 
-    if name_only:
+    if opts["name"]:
         name = Path(item["rel"]).name
-        if or_mode:
-            matched = any(p.search(name) for p in all_patterns)
-        else:
-            matched = all(p.search(name) for p in all_patterns)
-        if matched:
-            return (item, [])
-        return None
+        matched = combine(p.search(name) for p in all_pats)
+        return (item, []) if matched else None
 
-    is_special = Path(path).suffix.lower() in _SPECIAL_EXTS
-
-    if not is_special and not is_probably_text_file(path):
+    is_special = Path(path).suffix.lower() in SPECIAL_EXTS
+    if not is_special and not _is_probably_text(path):
         return None
 
     try:
-        if file_mode:
-            found_patterns = set()
+        if opts["file"]:
+            found = set()
             lines_cache = []
 
             if is_special:
-                special_lines = _get_special_lines(path)
-                if special_lines is None:
+                lines_cache = _extract_lines(path)
+                if lines_cache is None:
                     return None
-                lines_cache = special_lines
                 for line in lines_cache:
-                    for idx, pat in enumerate(all_patterns):
-                        if pat.search(line):
-                            found_patterns.add(idx)
+                    for i, p in enumerate(all_pats):
+                        if p.search(line):
+                            found.add(i)
             else:
                 with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
                     for line in f:
                         lines_cache.append(line)
-                        for idx, pat in enumerate(all_patterns):
-                            if pat.search(line):
-                                found_patterns.add(idx)
+                        for i, p in enumerate(all_pats):
+                            if p.search(line):
+                                found.add(i)
 
-            if or_mode:
-                if not found_patterns:
+            if opts["or"]:
+                if not found:
                     return None
             else:
-                if found_patterns != set(range(len(all_patterns))):
+                if found != set(range(len(all_pats))):
                     return None
 
-            if list_files:
+            if opts["list"]:
                 return (item, [])
 
             matches = []
-            for lineno, line in enumerate(lines_cache, start=1):
-                if any_pattern.search(line):
-                    colno = first_match_column(line, any_pattern)
-                    matches.append((lineno, colno, line))
+            for ln, line in enumerate(lines_cache, 1):
+                if any_pat.search(line):
+                    matches.append((ln, _column(line, any_pat), line))
             return (item, matches)
 
         else:
             matches = []
 
             if is_special:
-                special_lines = _get_special_lines(path)
+                special_lines = _extract_lines(path)
                 if special_lines is None:
                     return None
-                for lineno, line in enumerate(special_lines, start=1):
-                    if or_mode:
-                        matched = any(p.search(line) for p in all_patterns)
-                    else:
-                        matched = all(p.search(line) for p in all_patterns)
-                    if matched:
-                        if list_files:
+                for ln, line in enumerate(special_lines, 1):
+                    if combine(p.search(line) for p in all_pats):
+                        if opts["list"]:
                             return (item, [])
-                        colno = first_match_column(line, any_pattern)
-                        matches.append((lineno, colno, line))
+                        matches.append((ln, _column(line, any_pat), line))
             else:
                 with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                    for lineno, line in enumerate(f, start=1):
-                        if or_mode:
-                            matched = any(p.search(line) for p in all_patterns)
-                        else:
-                            matched = all(p.search(line) for p in all_patterns)
-                        if matched:
-                            if list_files:
+                    for ln, line in enumerate(f, 1):
+                        if combine(p.search(line) for p in all_pats):
+                            if opts["list"]:
                                 return (item, [])
-                            colno = first_match_column(line, any_pattern)
-                            matches.append((lineno, colno, line))
+                            matches.append((ln, _column(line, any_pat), line))
 
-            if matches:
-                return (item, matches)
-            return None
+            return (item, matches) if matches else None
 
     except Exception:
         return None
 
 
-def handle_result(item, matches, outdir, transfer_mode, color_path, is_tty,
-                  list_files, name_only, any_pattern, flat):
-    if outdir is not None:
-        if flat:
-            target = resolve_flat_target(outdir, item["rel"])
+# Search engines
+
+def _run_stream(info, all_pats, any_pat, args, callback):
+    shutil.which("zstd") or die("Missing required command: zstd")
+    proc = subprocess.Popen(["zstd", "-d", "-T0", str(info["path"]), "-c"], stdout=subprocess.PIPE)
+    tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"]}
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+            for member in tf:
+                if not member.isfile():
+                    continue
+                rel = member.name[2:] if member.name.startswith("./") else member.name
+                if not _should_include(rel, args["filters"]):
+                    continue
+                ef = tf.extractfile(member)
+                if ef is None:
+                    continue
+                tp = tmp / "current"
+                with open(str(tp), "wb") as f:
+                    shutil.copyfileobj(ef, f)
+                callback(_process_file(({"rel": rel, "path": str(tp), "display": rel},
+                                        all_pats, any_pat, opts)))
+                try: tp.unlink()
+                except FileNotFoundError: pass
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        proc.terminate(); proc.wait()
+
+
+def _run_python(items, all_pats, any_pat, args, callback):
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"]}
+    task_args = [(item, all_pats, any_pat, opts) for item in items]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args["jobs"]) as pool:
+        futures = {pool.submit(_process_file, a): a[0] for a in task_args}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                callback(future.result())
+            except Exception:
+                pass
+
+
+def _make_ugrep_item(fpath, info, extracted):
+    p = Path(os.path.abspath(fpath))
+    if not p.exists():
+        return None
+    if info["kind"] == "archive":
+        if extracted is None:
+            return None
+        rel = p.relative_to(extracted).as_posix()
+        display = rel
+    elif info["kind"] == "dir":
+        try:
+            rel = p.relative_to(info["path"]).as_posix()
+        except ValueError:
+            rel = p.name
+        display = _display(p)
+    else:
+        rel = p.name
+        display = _display(p)
+    return {"rel": rel, "path": str(p), "display": display}
+
+
+def _run_ugrep(info, extracted, args, callback):
+    if not shutil.which("ugrep"):
+        die("Missing required command: ugrep")
+
+    root = (extracted if extracted else info["path"]).as_posix()
+    cmd = ["ugrep", "--no-messages", "--binary-files=without-match",
+           "-H", "--no-ignore-files", "--hidden"]
+    if info["kind"] in ("dir", "archive"):
+        cmd.append("-r")
+    if not args["case"]:
+        cmd.append("-i")
+    if args["mode"] == "exact":
+        cmd.append("-w")
+    for ext in SPECIAL_EXTS:
+        cmd.extend(["-g", f"!*{ext}"])
+    f = args["filters"]
+    if f:
+        for p in f.get("include", []):
+            cmd.extend(["-g", p])
+        for p in f.get("exclude", []):
+            cmd.extend(["-g", f"!{p}"])
+    if args["list"]:
+        cmd.append("-l")
+    else:
+        cmd.extend(["-n", "-k", "--color=never"])
+    if args["or"]:
+        for w in args["words"]:
+            cmd.extend(["-e", w])
+    else:
+        for i, w in enumerate(args["words"]):
+            cmd.extend(["-e", w])
+            if i < len(args["words"]) - 1:
+                cmd.append("--and")
+    cmd.append(root)
+
+    proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
+    if proc.returncode == 2:
+        err = (proc.stderr or "").strip() or "unknown error"
+        eprint(f"{PROGRAM}: ugrep error: {err}")
+        eprint(f"{PROGRAM}: falling back to Python engine")
+        return False
+    if proc.returncode != 0:
+        return True
+
+    stdout = proc.stdout or ""
+    if args["list"]:
+        for fp in stdout.splitlines():
+            item = _make_ugrep_item(fp, info, extracted)
+            if item:
+                callback((item, []))
+    else:
+        line_re = re.compile(r'^(.*?):(\d+):(\d+):(.*)$', re.DOTALL)
+        results = {}
+        for line in stdout.splitlines():
+            m = line_re.match(line)
+            if not m:
+                continue
+            fp, ln, cn, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+            item = _make_ugrep_item(fp, info, extracted)
+            if item:
+                if fp not in results:
+                    results[fp] = (item, [])
+                results[fp][1].append((ln, cn, text + "\n"))
+        for item, matches in results.values():
+            callback((item, matches))
+    return True
+
+
+def _run(args):
+    info = _detect(args["input"])
+    all_pats = _compile_all(args["words"], args["mode"], args["case"])
+    any_pat = _compile_any(args["words"], args["mode"], args["case"])
+    outdir = args["outdir"]
+    tty = sys.stdout.isatty()
+
+    if outdir:
+        outdir.mkdir(parents=True, exist_ok=True)
+
+    found = False
+
+    def callback(result):
+        nonlocal found
+        if result is None:
+            return
+        found = True
+        _output(result[0], result[1], outdir, args["move"], args["color"], tty,
+                args["list"], args["name"], any_pat, args["flat"])
+
+    if info["kind"] == "archive" and args["stream"]:
+        _run_stream(info, all_pats, any_pat, args, callback)
+        if outdir and found:
+            eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {_display(outdir)}")
+        return found
+
+    temp_root = None
+    try:
+        extracted = None
+        if info["kind"] == "archive":
+            temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(_pick_tmp_root())))
+            _extract_archive(info["path"], temp_root)
+            extracted = temp_root
+
+        exclude = None
+        if info["kind"] == "dir" and outdir:
+            if _is_within(str(outdir), str(info["path"])):
+                exclude = outdir
+
+        if info["kind"] == "archive":
+            items = list(_walk_archive(extracted, args["filters"]))
+        elif info["kind"] == "dir":
+            items = list(_walk_dir(info["path"], args["filters"], exclude))
         else:
-            target = outdir / item["rel"]
-        safe_transfer(item["path"], target, transfer_mode)
-        display = pretty_local_path(target)
-    else:
-        display = item["display_path"]
+            items = list(_walk_single(args["input"]))
 
-    if list_files or name_only:
-        text = maybe_color_path_text(display, color_path, is_tty)
-        sys.stdout.write(text + "\n")
-        sys.stdout.flush()
-    else:
-        for lineno, colno, line in matches:
-            prefix = make_location_label(display, lineno, colno, color_path, is_tty)
-            colored_line = colorize_line(line, any_pattern, colorize=is_tty)
-            sys.stdout.write(f"{prefix}: {colored_line}\n")
-            sys.stdout.flush()
+        use_ugrep = args["ugrep"] and not args["stream"] and not args["name"]
+        if use_ugrep and args["file"] and not args["or"]:
+            use_ugrep = False
+
+        ugrep_ok = False
+        if use_ugrep:
+            ugrep_ok = _run_ugrep(info, extracted, args, callback)
+
+        if not ugrep_ok:
+            _run_python(items, all_pats, any_pat, args, callback)
+        else:
+            specials = [i for i in items if Path(i["path"]).suffix.lower() in SPECIAL_EXTS]
+            if specials:
+                _run_python(specials, all_pats, any_pat, args, callback)
+
+        if outdir and found:
+            eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {_display(outdir)}")
+        return found
+
+    finally:
+        if temp_root:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def choose_completion_target():
-    candidates = [
-        Path("/usr/share/bash-completion/completions"),
-        Path("/usr/local/share/bash-completion/completions"),
-        Path("/etc/bash_completion.d"),
-    ]
-    for d in candidates:
-        if d.exists() and d.is_dir():
+# Installation
+
+def _complete_dir():
+    for d in [Path("/usr/share/bash-completion/completions"),
+              Path("/usr/local/share/bash-completion/completions"),
+              Path("/etc/bash_completion.d")]:
+        if d.is_dir():
             return d / PROGRAM
     return Path("/usr/local/share/bash-completion/completions") / PROGRAM
 
 
-def install_file(src, dst, mode, use_sudo):
-    require_cmd("install")
-    if use_sudo:
-        require_cmd("sudo")
+def _install_file(src, dst, mode, sudo):
+    shutil.which("install") or die("Missing required command: install")
+    if sudo:
+        shutil.which("sudo") or die("Missing required command: sudo")
         subprocess.run(["sudo", "mkdir", "-p", str(dst.parent)], check=True)
         subprocess.run(["sudo", "install", "-m", f"{mode:o}", str(src), str(dst)], check=True)
     else:
@@ -939,93 +1112,41 @@ def install_file(src, dst, mode, use_sudo):
         subprocess.run(["install", "-m", f"{mode:o}", str(src), str(dst)], check=True)
 
 
-def _install_self_unix():
+def _install_unix():
     self_path = Path(__file__).resolve()
     bin_target = Path("/usr/local/bin") / PROGRAM
-    comp_target = choose_completion_target()
-    use_sudo = (os.geteuid() != 0)
-
-    tmp_completion = None
+    comp_target = _complete_dir()
+    sudo = (os.geteuid() != 0)
+    tmp = None
     try:
         fd, tmp_name = tempfile.mkstemp(prefix="zxgrep_completion_", text=True)
         os.close(fd)
-        tmp_completion = Path(tmp_name)
-        tmp_completion.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8")
-
-        install_file(self_path, bin_target, 0o755, use_sudo)
-        install_file(tmp_completion, comp_target, 0o644, use_sudo)
-
+        tmp = Path(tmp_name)
+        tmp.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8")
+        _install_file(self_path, bin_target, 0o755, sudo)
+        _install_file(tmp, comp_target, 0o644, sudo)
+        print(f"Installed main program to: {bin_target}")
+        print(f"Installed Bash completion to: {comp_target}")
+        print("If completion still doesn't work in the current shell, open a new Bash or run:")
+        print(f"  source {comp_target}")
     finally:
-        if tmp_completion and tmp_completion.exists():
-            try:
-                tmp_completion.unlink()
-            except Exception:
-                pass
-
-    print(f"Installed main program to: {bin_target}")
-    print(f"Installed Bash completion to: {comp_target}")
-    print("If completion still doesn't work in the current shell, open a new Bash or run:")
-    print(f"  source {comp_target}")
+        if tmp and tmp.exists():
+            try: tmp.unlink()
+            except Exception: pass
 
 
-def _add_to_user_path_windows(directory):
-    try:
-        import winreg
-    except ImportError:
-        return False
-
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Environment",
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
-        )
-        try:
-            current, _ = winreg.QueryValueEx(key, "PATH")
-            paths = [os.path.normcase(p) for p in current.split(os.pathsep) if p]
-            if os.path.normcase(directory) in paths:
-                return True
-            new_path = current.rstrip(os.pathsep) + os.pathsep + directory
-            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
-        except FileNotFoundError:
-            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, directory)
-        finally:
-            winreg.CloseKey(key)
-
-        # Broadcast WM_SETTINGCHANGE so new terminals pick up the change
-        try:
-            import ctypes
-            ctypes.windll.user32.SendMessageTimeoutW(
-                0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None,
-            )
-        except Exception:
-            pass
-
-        return True
-    except Exception:
-        return False
-
-
-def _find_git_bash_completion_dir():
+def _find_git_bash_dir():
     candidates = []
-
-    for env_var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
-        pf = os.environ.get(env_var)
+    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        pf = os.environ.get(env)
         if pf:
             candidates.append(Path(pf) / "Git")
-
     try:
-        r = subprocess.run(
-            ["git", "--exec-path"],
-            capture_output=True, text=True, timeout=5,
-        )
+        r = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and r.stdout.strip():
-            # e.g. C:\Program Files\Git\mingw64\libexec\git-core → root is 3 levels up
             candidates.append(Path(r.stdout.strip()).parent.parent.parent)
     except Exception:
         pass
-
     seen = set()
     for gd in candidates:
         norm = os.path.normcase(str(gd))
@@ -1039,7 +1160,7 @@ def _find_git_bash_completion_dir():
 
 
 def _install_completion_windows():
-    sys_dir = _find_git_bash_completion_dir()
+    sys_dir = _find_git_bash_dir()
     if sys_dir is not None:
         target = sys_dir / PROGRAM
         target.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8", newline="\n")
@@ -1054,13 +1175,11 @@ def _install_completion_windows():
     print(f"Installed Bash completion to: {target}")
 
     source_line = f"[ -f ~/.bash_completion.d/{PROGRAM} ] && . ~/.bash_completion.d/{PROGRAM}"
-
     bashrc = home / ".bashrc"
     need_append = True
     if bashrc.exists():
         if PROGRAM in bashrc.read_text(encoding="utf-8", errors="replace"):
             need_append = False
-
     if need_append:
         with open(str(bashrc), "a", encoding="utf-8", newline="\n") as f:
             f.write(f"\n{source_line}\n")
@@ -1069,107 +1188,95 @@ def _install_completion_windows():
     bash_profile = home / ".bash_profile"
     if bash_profile.exists():
         bp_text = bash_profile.read_text(encoding="utf-8", errors="replace")
-        if 'bashrc' not in bp_text and PROGRAM not in bp_text:
+        if "bashrc" not in bp_text and PROGRAM not in bp_text:
             with open(str(bash_profile), "a", encoding="utf-8", newline="\n") as f:
                 f.write(f"\n{source_line}\n")
             print(f"Added source line to: {bash_profile}")
     else:
         bash_profile.write_text(
-            '# ~/.bash_profile\n'
-            'if [ -f ~/.bashrc ]; then\n'
-            '  . ~/.bashrc\n'
-            'fi\n',
-            encoding="utf-8",
-            newline="\n",
-        )
+            '# ~/.bash_profile\nif [ -f ~/.bashrc ]; then\n  . ~/.bashrc\nfi\n',
+            encoding="utf-8", newline="\n")
         print(f"Created: {bash_profile}")
 
 
-def _install_self_windows():
+def _add_to_user_path_windows(directory):
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0,
+                             winreg.KEY_READ | winreg.KEY_WRITE)
+        try:
+            cur, _ = winreg.QueryValueEx(key, "PATH")
+            paths = [os.path.normcase(p) for p in cur.split(os.pathsep) if p]
+            if os.path.normcase(directory) in paths:
+                return True
+            new = cur.rstrip(os.pathsep) + os.pathsep + directory
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new)
+        except FileNotFoundError:
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, directory)
+        finally:
+            winreg.CloseKey(key)
+        try:
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _install_windows():
     self_path = Path(__file__).resolve()
-
     import sysconfig
-    scripts_dir = Path(sysconfig.get_path("scripts"))
+    scripts = Path(sysconfig.get_path("scripts"))
+    if not os.access(str(scripts), os.W_OK):
+        scripts = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "zxgrep-bin"
+        scripts.mkdir(parents=True, exist_ok=True)
 
-    if not os.access(str(scripts_dir), os.W_OK):
-        scripts_dir = Path(
-            os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
-        ) / "zxgrep-bin"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-
-    target_py = scripts_dir / "zxgrep.py"
-    target_cmd = scripts_dir / "zxgrep.cmd"
-    target_sh = scripts_dir / "zxgrep"
-
+    target_py = scripts / "zxgrep.py"
+    target_cmd = scripts / "zxgrep.cmd"
+    target_sh = scripts / "zxgrep"
     shutil.copy2(str(self_path), str(target_py))
-
-    # CMD / PowerShell
-    target_cmd.write_text(
-        '@python "%~dp0zxgrep.py" %*\n',
-        encoding="ascii",
-    )
-
-    # Git Bash / MSYS2 (LF required)
-    target_sh.write_text(
-        '#!/bin/sh\nexec python "$(dirname "$0")/zxgrep.py" "$@"\n',
-        encoding="ascii",
-        newline="\n",
-    )
-
+    target_cmd.write_text('@python "%~dp0zxgrep.py" %*\n', encoding="ascii")
+    target_sh.write_text('#!/bin/sh\nexec python "$(dirname "$0")/zxgrep.py" "$@"\n',
+                         encoding="ascii", newline="\n")
     print(f"Installed main program to: {target_py}")
     print(f"Created launcher (cmd):    {target_cmd}")
     print(f"Created launcher (bash):   {target_sh}")
 
-    # Bash completion for Git Bash
     _install_completion_windows()
 
-    path_dirs = [
-        os.path.normcase(p)
-        for p in os.environ.get("PATH", "").split(os.pathsep)
-        if p
-    ]
-    norm_scripts = os.path.normcase(str(scripts_dir))
-
-    if norm_scripts in path_dirs:
-        print(f"\n{scripts_dir} is already on your PATH.")
+    path_dirs = [os.path.normcase(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    if os.path.normcase(str(scripts)) in path_dirs:
+        print(f"\n{scripts} is already on your PATH.")
         print("You can now use:  zxgrep <args>")
     else:
-        added = _add_to_user_path_windows(str(scripts_dir))
+        added = _add_to_user_path_windows(str(scripts))
         if added:
-            print(f"\nAdded {scripts_dir} to your user PATH.")
+            print(f"\nAdded {scripts} to your user PATH.")
             print("Please open a NEW terminal window, then use:  zxgrep <args>")
         else:
             print(f"\nCould not automatically add to PATH.")
-            print("Please manually add this directory to your user PATH:")
-            print(f"  {scripts_dir}")
-            print("Then open a new terminal and use:  zxgrep <args>")
+            print(f"Please manually add this directory to your user PATH:\n  {scripts}")
 
 
-def install_self():
-    if sys.platform == "win32":
-        _install_self_windows()
-    else:
-        _install_self_unix()
+def _install_self():
+    (_install_windows if sys.platform == "win32" else _install_unix)()
 
 
-def print_bash_completion():
-    print(BASH_COMPLETION_SCRIPT, end="")
-
-
-def clean_auto_outdirs():
-    current_dir = Path.cwd()
-    pattern = "zxgrep_*"
-    dirs = list(current_dir.glob(pattern))
+def _clean():
+    dirs = list(Path.cwd().glob("zxgrep_*"))
     if not dirs:
         print("No auto-generated output directories found.")
         return
-
     print("The following directories will be removed:")
     for d in dirs:
         print(f"  {d}")
-
-    response = input("Confirm deleting these directories? [y/N] ").strip().lower()
-    if response in ('y', 'yes'):
+    if input("Confirm deleting these directories? [y/N] ").strip().lower() in ("y", "yes"):
         for d in dirs:
             if d.is_dir():
                 shutil.rmtree(d)
@@ -1179,529 +1286,38 @@ def clean_auto_outdirs():
         print("Cleanup canceled.")
 
 
-def parse_args(argv):
-    if not argv:
-        usage()
-        raise SystemExit(1)
-
-    if len(argv) == 1 and argv[0] in ("-h", "--help"):
-        usage()
-        raise SystemExit(0)
-
-    if len(argv) == 1 and argv[0] == "--install":
-        return {"action": "install"}
-
-    if len(argv) == 1 and argv[0] == "--print-bash-completion":
-        return {"action": "print-completion"}
-
-    if len(argv) == 1 and argv[0] == "--clean":
-        return {"action": "clean"}
-
-    input_path = None
-    words = []
-    file_mode = False
-    outdir = None
-    auto_out = False
-    case_sensitive = False
-    list_files = False
-    name_only = False
-    color_path = True
-    mode = "substr"           # substr / exact / regex
-    transfer_mode = "copy"    # copy / move
-    transfer_mode_set = False
-    jobs = None
-    or_mode = False
-    includes = []
-    excludes = []
-    stream = False
-    flat = False
-    ugrep = False
-
-    stop_opts = False
-    i = 0
-
-    while i < len(argv):
-        arg = argv[i]
-
-        if not stop_opts and arg == "--":
-            stop_opts = True
-            i += 1
-            continue
-
-        if not stop_opts:
-            if arg in ("-h", "--help"):
-                usage()
-                raise SystemExit(0)
-            elif arg == "--install":
-                die("--install cannot be used together with search arguments")
-            elif arg == "--print-bash-completion":
-                die("--print-bash-completion cannot be used together with search arguments")
-            elif arg == "--clean":
-                die("--clean cannot be used together with search arguments")
-            elif arg == "--file":
-                file_mode = True
-                i += 1
-                continue
-            elif arg in ("-s", "--case-sensitive"):
-                case_sensitive = True
-                i += 1
-                continue
-            elif arg in ("-x", "--exact"):
-                if mode == "regex":
-                    die("--exact and --regex cannot be used together")
-                mode = "exact"
-                i += 1
-                continue
-            elif arg in ("-r", "--regex"):
-                if mode == "exact":
-                    die("--exact and --regex cannot be used together")
-                mode = "regex"
-                i += 1
-                continue
-            elif arg == "--or":
-                or_mode = True
-                i += 1
-                continue
-            elif arg == "--include":
-                i += 1
-                if i >= len(argv):
-                    die("--include requires a glob pattern")
-                includes.append(argv[i])
-                i += 1
-                continue
-            elif arg == "--exclude":
-                i += 1
-                if i >= len(argv):
-                    die("--exclude requires a glob pattern")
-                excludes.append(argv[i])
-                i += 1
-                continue
-            elif arg in ("-l", "--list-files"):
-                list_files = True
-                i += 1
-                continue
-            elif arg in ("-N", "--name-only"):
-                name_only = True
-                file_mode = True
-                list_files = True
-                i += 1
-                continue
-            elif arg == "--color-path":
-                color_path = True
-                i += 1
-                continue
-            elif arg == "--no-color-path":
-                color_path = False
-                i += 1
-                continue
-            elif arg == "--copy":
-                if transfer_mode_set and transfer_mode != "copy":
-                    die("--copy and --move cannot be used together")
-                transfer_mode = "copy"
-                transfer_mode_set = True
-                i += 1
-                continue
-            elif arg == "--move":
-                if transfer_mode_set and transfer_mode != "move":
-                    die("--copy and --move cannot be used together")
-                transfer_mode = "move"
-                transfer_mode_set = True
-                i += 1
-                continue
-            elif arg == "-o":
-                i += 1
-                if i >= len(argv):
-                    die("-o requires an output directory")
-                if auto_out:
-                    die("-o and -O cannot be used together")
-                outdir = abs_path(argv[i])
-                i += 1
-                continue
-            elif arg == "-O":
-                if outdir is not None:
-                    die("-o and -O cannot be used together")
-                auto_out = True
-                i += 1
-                continue
-            elif arg in ("-j", "--jobs"):
-                i += 1
-                if i >= len(argv):
-                    die("-j/--jobs requires a process count")
-                try:
-                    jobs = int(argv[i])
-                    if jobs < 1:
-                        die("Process count must be a positive integer")
-                except ValueError:
-                    die(f"Invalid process count: {argv[i]}")
-                i += 1
-                continue
-            elif arg == "--stream":
-                stream = True
-                i += 1
-                continue
-            elif arg == "--flat":
-                flat = True
-                i += 1
-                continue
-            elif arg == "--ugrep":
-                ugrep = True
-                i += 1
-                continue
-            elif arg.startswith("-"):
-                die(f"Unsupported option: {arg}")
-
-        if input_path is None:
-            input_path = arg
-        else:
-            words.append(arg)
-        i += 1
-
-    if input_path is None:
-        die("Missing INPUT")
-    if not words:
-        die("At least one keyword/expression is required")
-    if any(w == "" for w in words):
-        die("Keyword/expression cannot be empty")
-
-    if auto_out:
-        outdir = abs_path(auto_outdir_name(words))
-
-    if flat and outdir is None:
-        die("--flat can only be used with -o or -O")
-
-    if transfer_mode_set and outdir is None:
-        die("--copy/--move can only be used with -o or -O")
-
-    if jobs is None:
-        jobs = os.cpu_count() or 4
-
-    filters = None
-    if includes or excludes:
-        filters = {"include": includes, "exclude": excludes}
-
-    return {
-        "action": "search",
-        "input_path": abs_path(input_path),
-        "words": words,
-        "file_mode": file_mode,
-        "outdir": outdir,
-        "case_sensitive": case_sensitive,
-        "mode": mode,
-        "or_mode": or_mode,
-        "list_files": list_files,
-        "name_only": name_only,
-        "transfer_mode": transfer_mode,
-        "color_path": color_path,
-        "jobs": jobs,
-        "filters": filters,
-        "stream": stream,
-        "flat": flat,
-        "ugrep": ugrep,
-    }
-
-
-# ---------------------------------------------------------------------------
-# ugrep integration helpers
-# ---------------------------------------------------------------------------
-
-_UGREP_LINE_RE = re.compile(r'^(.*?):(\d+):(\d+):(.*)$', re.DOTALL)
-
-
-def _parse_ugrep_line(line):
-    m = _UGREP_LINE_RE.match(line)
-    if m:
-        return m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
-    return None
-
-
-def _make_item_from_path(fpath, source_info, extracted_root):
-    p = abs_path(fpath)
-    if not p.exists():
-        return None
-    if source_info["kind"] == "archive":
-        if extracted_root is None:
-            return None
-        rel = p.relative_to(extracted_root).as_posix()
-        display_path = rel
-    elif source_info["kind"] == "dir":
-        try:
-            rel = p.relative_to(source_info["path"]).as_posix()
-        except ValueError:
-            rel = p.name
-        display_path = pretty_local_path(p)
-    else:
-        rel = p.name
-        display_path = pretty_local_path(p)
-    return {"rel": rel, "path": str(p), "display_path": display_path}
-
-
-# ---------------------------------------------------------------------------
-# Search engines
-# ---------------------------------------------------------------------------
-
-def _make_opts(args):
-    return {
-        "file_mode": args["file_mode"],
-        "list_files": args["list_files"],
-        "name_only": args["name_only"],
-        "or_mode": args["or_mode"],
-    }
-
-
-def _run_stream(source_info, all_patterns, any_pattern, args, on_result):
-    require_cmd("zstd")
-    filters = args["filters"]
-    opts = _make_opts(args)
-
-    proc = subprocess.Popen(
-        ["zstd", "-d", "-T0", str(source_info["path"]), "-c"],
-        stdout=subprocess.PIPE,
-    )
-    tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-    try:
-        tf = tarfile.open(fileobj=proc.stdout, mode="r|")
-        for member in tf:
-            if not member.isfile():
-                continue
-            rel = member.name
-            if rel.startswith("./"):
-                rel = rel[2:]
-            if not check_file_filters(rel, filters):
-                continue
-            ef = tf.extractfile(member)
-            if ef is None:
-                continue
-            tmp_path = tmp / "current"
-            with open(str(tmp_path), "wb") as out_f:
-                shutil.copyfileobj(ef, out_f)
-            item = {"rel": rel, "path": str(tmp_path), "display_path": rel}
-            on_result(worker_search_file((item, all_patterns, any_pattern, opts)))
-            try:
-                tmp_path.unlink()
-            except FileNotFoundError:
-                pass
-        tf.close()
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-        proc.terminate()
-        proc.wait()
-
-
-def _python_workers(items, all_patterns, any_pattern, args, on_result):
-    opts = _make_opts(args)
-    task_args = [(item, all_patterns, any_pattern, opts) for item in items]
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args["jobs"]) as executor:
-        futures = {executor.submit(worker_search_file, arg): arg[0] for arg in task_args}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                on_result(future.result())
-            except Exception:
-                pass
-
-
-def _ugrep_search(roots, source_info, extracted_root, args, on_result):
-    words = args["words"]
-    mode = args["mode"]
-    case_sensitive = args["case_sensitive"]
-    or_mode = args["or_mode"]
-    list_files = args["list_files"]
-    filters = args["filters"]
-
-    cmd = ["ugrep", "--no-messages", "--binary-files=without-match",
-           "-H", "--no-ignore-files", "--hidden"]
-    if source_info["kind"] in ("dir", "archive"):
-        cmd.append("-r")
-    if not case_sensitive:
-        cmd.append("-i")
-    if mode == "exact":
-        cmd.append("-w")
-
-    for ext in _SPECIAL_EXTS:
-        cmd.extend(["-g", f"!*{ext}"])
-    if filters:
-        for pat in filters.get("include", []):
-            cmd.extend(["-g", pat])
-        for pat in filters.get("exclude", []):
-            cmd.extend(["-g", f"!{pat}"])
-
-    if list_files:
-        cmd.append("-l")
-    else:
-        cmd.extend(["-n", "-k", "--color=never"])
-
-    if or_mode:
-        for w in words:
-            cmd.extend(["-e", w])
-    else:
-        for i, w in enumerate(words):
-            cmd.extend(["-e", w])
-            if i < len(words) - 1:
-                cmd.append("--and")
-
-    cmd.extend(roots)
-
-    proc = subprocess.run(cmd, capture_output=True,
-                          encoding="utf-8", errors="replace")
-
-    if proc.returncode == 2:
-        err = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "unknown error"
-        eprint(f"{PROGRAM}: ugrep error: {err}")
-        eprint(f"{PROGRAM}: falling back to Python engine")
-        return False
-
-    if proc.returncode == 0:
-        stdout = proc.stdout or ""
-        if list_files:
-            for f in stdout.splitlines():
-                item = _make_item_from_path(f, source_info, extracted_root)
-                if item:
-                    on_result((item, []))
-        else:
-            results = {}
-            for line in stdout.splitlines():
-                parsed = _parse_ugrep_line(line)
-                if parsed:
-                    fpath, lineno, colno, text = parsed
-                    item = _make_item_from_path(fpath, source_info, extracted_root)
-                    if item:
-                        if fpath not in results:
-                            results[fpath] = (item, [])
-                        results[fpath][1].append((lineno, colno, text + "\n"))
-            for fpath, (item, matches) in results.items():
-                on_result((item, matches))
-
-    return True
-
-
-def run_search(args):
-    input_path = args["input_path"]
-    outdir = args["outdir"]
-    transfer_mode = args["transfer_mode"]
-    color_path = args["color_path"]
-    list_files = args["list_files"]
-    name_only = args["name_only"]
-    flat = args["flat"]
-    stream = args["stream"]
-    file_mode = args["file_mode"]
-    or_mode = args["or_mode"]
-    filters = args["filters"]
-
-    source_info = detect_input_kind(input_path)
-    all_patterns = build_patterns(args["words"], mode=args["mode"],
-                                  case_sensitive=args["case_sensitive"])
-    any_pattern = build_highlight_pattern(args["words"], mode=args["mode"],
-                                          case_sensitive=args["case_sensitive"])
-    is_tty = sys.stdout.isatty()
-
-    if outdir is not None:
-        outdir = abs_path(outdir)
-        outdir.mkdir(parents=True, exist_ok=True)
-
-    use_ugrep = args.get("ugrep", False)
-    if use_ugrep and (stream or name_only or (file_mode and not or_mode)):
-        use_ugrep = False
-    if use_ugrep:
-        require_cmd("ugrep")
-
-    found = False
-    matched_count = 0
-
-    def on_result(result):
-        nonlocal found, matched_count
-        if result is None:
-            return
-        found = True
-        matched_count += 1
-        handle_result(result[0], result[1], outdir, transfer_mode,
-                      color_path, is_tty, list_files, name_only, any_pattern, flat)
-
-    temp_root = None
-
-    try:
-        if source_info["kind"] == "archive" and stream:
-            _run_stream(source_info, all_patterns, any_pattern, args, on_result)
-            return found
-
-        extracted_root = None
-        if source_info["kind"] == "archive":
-            temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(pick_tmp_root())))
-            extract_archive(source_info["path"], temp_root)
-            extracted_root = temp_root
-
-        exclude_dir = None
-        if source_info["kind"] == "dir" and outdir is not None:
-            if path_is_within(str(outdir), str(source_info["path"])):
-                exclude_dir = outdir
-
-        if use_ugrep:
-            roots = [extracted_root.as_posix() if extracted_root
-                     else source_info["path"].as_posix()]
-            ok = _ugrep_search(roots, source_info, extracted_root, args, on_result)
-
-            if not ok:
-                items = build_source_items(source_info, extracted_root,
-                                           exclude_dir=exclude_dir, filters=filters)
-                if items:
-                    _python_workers(items, all_patterns, any_pattern, args, on_result)
-            else:
-                all_items = build_source_items(source_info, extracted_root,
-                                               exclude_dir=exclude_dir, filters=filters)
-                special_items = [i for i in all_items
-                                 if Path(i["path"]).suffix.lower() in _SPECIAL_EXTS]
-                if special_items:
-                    _python_workers(special_items, all_patterns, any_pattern, args, on_result)
-        else:
-            items = build_source_items(source_info, extracted_root,
-                                       exclude_dir=exclude_dir, filters=filters)
-            if items:
-                _python_workers(items, all_patterns, any_pattern, args, on_result)
-
-        if outdir is not None and matched_count > 0:
-            action_text = "copied" if transfer_mode == "copy" else "moved"
-            eprint(f"Matched files have been {action_text} to: {pretty_local_path(outdir)}")
-
-        return found
-
-    finally:
-        if temp_root is not None:
-            shutil.rmtree(temp_root, ignore_errors=True)
-
-
-def enable_windows_ansi():
+def _enable_ansi():
     if sys.platform != "win32":
         return
     try:
         import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)
-        mode = ctypes.c_ulong()
-        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
-        if not (mode.value & 0x0004):
-            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)
+        m = ctypes.c_ulong()
+        k.GetConsoleMode(h, ctypes.byref(m))
+        if not (m.value & 0x0004):
+            k.SetConsoleMode(h, m.value | 0x0004)
     except Exception:
         pass
 
 
+# Entry point
+
 def main(argv):
-    sys.stdout.reconfigure(encoding='utf-8')
-    enable_windows_ansi()
+    sys.stdout.reconfigure(encoding="utf-8")
+    _enable_ansi()
+    args = _parse(argv)
 
-    args = parse_args(argv)
+    actions = {
+        "help":             lambda: (usage(), 0)[1],
+        "install":          lambda: (_install_self(), 0)[1],
+        "print-completion": lambda: (print(BASH_COMPLETION_SCRIPT, end=""), 0)[1],
+        "clean":            lambda: (_clean(), 0)[1],
+    }
+    if args["action"] in actions:
+        return actions[args["action"]]()
 
-    if args["action"] == "install":
-        install_self()
-        return 0
-
-    if args["action"] == "print-completion":
-        print_bash_completion()
-        return 0
-
-    if args["action"] == "clean":
-        clean_auto_outdirs()
-        return 0
-
-    found = run_search(args)
-    return 0 if found else 1
+    return 0 if _run(args) else 1
 
 
 if __name__ == "__main__":
