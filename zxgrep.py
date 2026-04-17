@@ -1145,13 +1145,18 @@ def _run(args):
 
 # Installation
 
+_COMP_DIRS = [
+    Path("/usr/share/bash-completion/completions"),
+    Path("/usr/local/share/bash-completion/completions"),
+    Path("/etc/bash_completion.d"),
+]
+
+
 def _complete_dir():
-    for d in [Path("/usr/share/bash-completion/completions"),
-              Path("/usr/local/share/bash-completion/completions"),
-              Path("/etc/bash_completion.d")]:
+    for d in _COMP_DIRS:
         if d.is_dir():
             return d / PROGRAM
-    return Path("/usr/local/share/bash-completion/completions") / PROGRAM
+    return _COMP_DIRS[1] / PROGRAM
 
 
 def _install_file(src, dst, mode, sudo):
@@ -1171,6 +1176,11 @@ def _install_unix():
     comp_target = _complete_dir()
     sudo = (os.geteuid() != 0)
     tmp = None
+    for d in _COMP_DIRS:
+        old = d / PROGRAM
+        if old.exists() and old != comp_target:
+            subprocess.run((["sudo"] if sudo else []) + ["rm", "-f", str(old)],
+                           capture_output=True)
     try:
         fd, tmp_name = tempfile.mkstemp(prefix="zxgrep_completion_", text=True)
         os.close(fd)
