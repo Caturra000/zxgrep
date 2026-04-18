@@ -1030,7 +1030,7 @@ def _run_ugrep(info, extracted, args, callback):
     if not args["case"]:
         cmd.append("-i")
     if args["mode"] == "exact":
-        cmd.append("-w")
+        cmd.append("-P")
     for ext in SPECIAL_EXTS:
         cmd.extend(["-g", f"!*{ext}"])
     f = args["filters"]
@@ -1043,12 +1043,13 @@ def _run_ugrep(info, extracted, args, callback):
         cmd.append("-l")
     else:
         cmd.extend(["-n", "-k", "--color=never"])
+    wrap = (lambda w: f"(?<![0-9A-Za-z_]){re.escape(w)}(?![0-9A-Za-z_])") if args["mode"] == "exact" else (lambda w: w)
     if args["or"]:
         for w in args["words"]:
-            cmd.extend(["-e", w])
+            cmd.extend(["-e", wrap(w)])
     else:
         for i, w in enumerate(args["words"]):
-            cmd.extend(["-e", w])
+            cmd.extend(["-e", wrap(w)])
             if i < len(args["words"]) - 1:
                 cmd.append("--and")
     cmd.append(root)
