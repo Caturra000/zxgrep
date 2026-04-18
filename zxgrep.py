@@ -564,7 +564,8 @@ def _extract_archive(archive, dest):
     proc = subprocess.Popen(["zstd", "-d", "-T0", str(archive), "-c"], stdout=subprocess.PIPE)
     try:
         with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
-            tf.extractall(path=str(dest))
+            kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+            tf.extractall(path=str(dest), **kwargs)
     except Exception:
         proc.terminate(); proc.wait(); raise
     proc.wait()
