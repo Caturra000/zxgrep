@@ -102,6 +102,19 @@ complete -F _zxgrep zxgrep
 '''
 
 
+ZSH_COMPLETION_SCRIPT = r'''#compdef zxgrep
+_zxgrep() {
+    local opts=(--help -h --install --print-bash-completion --clean --file --case-sensitive -s --exact -x --regex -r --or --include --exclude --copy --move --list-files -l --name-only -N --color-path --no-color-path --stream --flat --ugrep -o -O -j --jobs)
+    if [[ $words[CURRENT] == -* ]]; then
+        compadd -- "${opts[@]}"
+        return
+    fi
+    _files
+}
+_zxgrep "$@"
+'''
+
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -1149,7 +1162,15 @@ def _run(args):
 _COMP_DIRS = [
     Path("/usr/share/bash-completion/completions"),
     Path("/usr/local/share/bash-completion/completions"),
+    Path("/opt/homebrew/share/bash-completion/completions"),
     Path("/etc/bash_completion.d"),
+]
+
+
+_ZSH_COMP_DIRS = [
+    Path("/usr/share/zsh/site-functions"),
+    Path("/usr/local/share/zsh/site-functions"),
+    Path("/opt/homebrew/share/zsh/site-functions"),
 ]
 
 
@@ -1158,6 +1179,13 @@ def _complete_dir():
         if d.is_dir():
             return d / PROGRAM
     return _COMP_DIRS[1] / PROGRAM
+
+
+def _zsh_comp_dir():
+    for d in _ZSH_COMP_DIRS:
+        if d.is_dir():
+            return d / "_zxgrep"
+    return None
 
 
 def _install_file(src, dst, mode, sudo):
@@ -1175,24 +1203,36 @@ def _install_unix():
     self_path = Path(__file__).resolve()
     bin_target = Path("/usr/local/bin") / PROGRAM
     comp_target = _complete_dir()
+    zsh_target = _zsh_comp_dir()
     sudo = (os.geteuid() != 0)
     tmp = None
-    for d in _COMP_DIRS:
-        old = d / PROGRAM
-        if old.exists() and old != comp_target:
-            subprocess.run((["sudo"] if sudo else []) + ["rm", "-f", str(old)],
-                           capture_output=True)
+
+    targets = {comp_target, zsh_target} - {None}
+    for d, name in [(d, PROGRAM) for d in _COMP_DIRS] + [(d, "_zxgrep") for d in _ZSH_COMP_DIRS]:
+        old = d / name
+        if old.exists() and old not in targets:
+            subprocess.run((["sudo"] if sudo else []) + ["rm", "-f", str(old)], capture_output=True)
+
     try:
         fd, tmp_name = tempfile.mkstemp(prefix="zxgrep_completion_", text=True)
         os.close(fd)
         tmp = Path(tmp_name)
-        tmp.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8")
+
         _install_file(self_path, bin_target, 0o755, sudo)
-        _install_file(tmp, comp_target, 0o644, sudo)
         print(f"Installed main program to: {bin_target}")
+
+        tmp.write_text(BASH_COMPLETION_SCRIPT, encoding="utf-8")
+        _install_file(tmp, comp_target, 0o644, sudo)
         print(f"Installed Bash completion to: {comp_target}")
-        print("If completion still doesn't work in the current shell, open a new Bash or run:")
-        print(f"  source {comp_target}")
+
+        zsh_hint = ""
+        if zsh_target:
+            tmp.write_text(ZSH_COMPLETION_SCRIPT, encoding="utf-8")
+            _install_file(tmp, zsh_target, 0o644, sudo)
+            print(f"Installed Zsh completion to: {zsh_target}")
+            zsh_hint = "\n  Zsh:  autoload -U compinit && compinit"
+
+        print(f"\nIf completion still doesn't work, open a new shell or:\n  Bash: source {comp_target}{zsh_hint}")
     finally:
         if tmp and tmp.exists():
             try: tmp.unlink()
