@@ -265,6 +265,11 @@ macOS might be available, but hasn't been tested yet.
 
 ## Installation
 
+1. Run `curl -fsSL https://raw.githubusercontent.com/Caturra000/zxgrep/master/install.sh | python`
+2. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
+
+OR
+
 1. Clone this project or just copy the single file (`zxgrep.py`).
 2. Run `python zxgrep.py --install` and follow the instructions.
 3. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
