@@ -4,7 +4,7 @@ A grep-like command for zstd compressed files (also directories and regular file
 
 ## Usage
 
-### Simple example
+### Example
 
 ```bash
 # test.tar.zst
@@ -20,12 +20,39 @@ tar -I zstd -cf /tmp/test.tar.zst -C /tmp test1.txt test2.txt
 zxgrep /tmp/test.tar.zst awesome xg
 ```
 
-Output:
+### Output
 
 test1.txt:1:2: z<mark>**xg**</mark>rep is <mark>**awesome**</mark>  
 test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
 
-### More details
+> See the [Manual](#manual) for more usage details.
+
+## Platforms
+
+Linux / Windows
+
+macOS might be available, but hasn't been tested yet.
+
+## Requirements
+
+- python
+- [zstd](https://github.com/facebook/zstd) (optional)
+- [poppler](https://poppler.freedesktop.org/) (optional)
+- [calibre](https://calibre-ebook.com/) (optional)
+- [ugrep](https://github.com/Genivia/ugrep) (optional)
+
+## Installation
+
+1. Run `curl -fsSL https://raw.githubusercontent.com/Caturra000/zxgrep/master/install.sh | python`
+2. OK. Let's try a simple [example](#example) using the `zxgrep` command.
+
+Alternatively,
+
+1. Clone this project or copy the `zxgrep.py` file.
+2. Run `python zxgrep.py --install` and follow the instructions.
+3. OK. Let's try a simple [example](#example) using the `zxgrep` command.
+
+## Manual
 
 ```python
 def usage():
@@ -248,31 +275,6 @@ Examples:
   zxgrep --clean
 """)
 ```
-
-## Platforms
-
-Linux / Windows
-
-macOS might be available, but hasn't been tested yet.
-
-## Requirements
-
-- python
-- [zstd](https://github.com/facebook/zstd) (optional)
-- [poppler](https://poppler.freedesktop.org/) (optional)
-- [calibre](https://calibre-ebook.com/) (optional)
-- [ugrep](https://github.com/Genivia/ugrep) (optional)
-
-## Installation
-
-1. Run `curl -fsSL https://raw.githubusercontent.com/Caturra000/zxgrep/master/install.sh | python`
-2. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
-
-OR
-
-1. Clone this project or just copy the single file (`zxgrep.py`).
-2. Run `python zxgrep.py --install` and follow the instructions.
-3. OK. Let's try a [simple example](#simple-example) using the `zxgrep` command.
 
 ## Note
 
