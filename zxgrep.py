@@ -781,25 +781,16 @@ class _EPUBParser(HTMLParser):
 def _extract_epub(path):
     try:
         with zipfile.ZipFile(path, "r") as zf:
-            files = sorted(n for n in zf.namelist()
+            names = sorted(n for n in zf.namelist()
                            if n.lower().endswith(('.html', '.htm', '.xhtml'))
                            and not n.startswith('META-INF/') and n != 'mimetype')
             parser = _EPUBParser()
-            for cf in files:
+            for name in names:
                 try:
-                    raw = zf.read(cf)
-                    text = None
-                    for enc in ('utf-8', 'latin-1'):
-                        try:
-                            text = raw.decode(enc); break
-                        except UnicodeDecodeError:
-                            continue
-                    if text:
-                        parser.feed(text)
+                    parser.feed(zf.read(name).decode('utf-8', errors='replace'))
                 except Exception:
                     continue
-            full = ''.join(parser._parts)
-            lines = [l + '\n' for l in full.split('\n')]
+            lines = [l + '\n' for l in ''.join(parser._parts).split('\n')]
             return lines if any(l.strip() for l in lines) else None
     except Exception:
         return None
