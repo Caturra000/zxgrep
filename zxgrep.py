@@ -599,8 +599,14 @@ def _should_include(rel, filters):
     return not inc or any(fnmatch.fnmatch(name, p) for p in inc)
 
 
-def _walk_dir(root, filters, exclude=None):
-    root = os.path.abspath(root)
+def _walk(root, filters, exclude=None, exts=None, rel_display=False):
+    root = os.path.abspath(str(root))
+    if os.path.isfile(root):
+        name = os.path.basename(root)
+        if exts and not any(name.endswith(e) for e in exts):
+            return
+        yield {"rel": name, "path": root, "display": _display(root)}
+        return
     ex = os.path.abspath(exclude) if exclude else None
     for cur, dirs, files in os.walk(root, followlinks=False):
         if ex:
@@ -608,6 +614,8 @@ def _walk_dir(root, filters, exclude=None):
         else:
             dirs[:] = sorted(dirs)
         for name in sorted(files):
+            if exts and not any(name.endswith(e) for e in exts):
+                continue
             p = os.path.join(cur, name)
             try:
                 st = os.lstat(p)
@@ -620,58 +628,23 @@ def _walk_dir(root, filters, exclude=None):
             rel = os.path.relpath(p, root).replace(os.sep, "/")
             if not _should_include(rel, filters):
                 continue
-            yield {"rel": rel, "path": p, "display": _display(p)}
+            yield {"rel": rel, "path": p, "display": rel if rel_display else _display(p)}
 
 
-def _walk_archive(root, filters):
-    root = Path(os.path.abspath(root))
-    for cur, dirs, files in os.walk(str(root), followlinks=False):
-        dirs[:] = sorted(dirs)
-        for name in sorted(files):
-            p = Path(cur) / name
-            if p.is_symlink() or not p.is_file():
-                continue
-            rel = p.relative_to(root).as_posix()
-            if not _should_include(rel, filters):
-                continue
-            yield {"rel": rel, "path": str(p), "display": rel}
-
-
-def _walk_single(path):
-    p = Path(os.path.abspath(os.path.expanduser(str(path))))
-    if p.is_file():
-        yield {"rel": p.name, "path": str(p), "display": _display(p)}
-
-
-def _find_specials(info, extracted, filters, exclude):
-    root = str(extracted if extracted else info["path"])
-    results = []
-    for cur, dirs, files in os.walk(root, followlinks=False):
-        if exclude:
-            dirs[:] = [d for d in dirs if not _is_within(os.path.join(cur, d), str(exclude))]
-        for name in files:
-            if not (name.endswith(".pdf") or name.endswith(".epub") or
-                    name.endswith(".mobi") or name.endswith(".azw3")):
-                continue
-            p = os.path.join(cur, name)
-            if os.path.islink(p) or not os.path.isfile(p):
-                continue
-            pp = Path(p)
-            if info["kind"] == "archive":
-                rel = pp.relative_to(extracted).as_posix()
-                display = rel
-            elif info["kind"] == "dir":
-                if exclude and _is_within(p, str(exclude)):
-                    continue
-                rel = pp.relative_to(info["path"]).as_posix()
-                display = _display(pp)
-            else:
-                rel = pp.name
-                display = _display(pp)
-            if not _should_include(rel, filters):
-                continue
-            results.append({"rel": rel, "path": p, "display": display})
-    return results
+def _expand_archives(items, filters, temp_roots):
+    archives = [it for it in items if it["path"].endswith(".tar.zst")]
+    if not archives:
+        return []
+    result = []
+    for arch in archives:
+        tmp = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(_pick_tmp_root())))
+        temp_roots.append(tmp)
+        _extract_archive(arch["path"], tmp)
+        for ai in _walk(tmp, filters, rel_display=True):
+            ai["rel"] = arch["rel"] + "/" + ai["rel"]
+            ai["display"] = arch["display"] + "/" + ai["display"]
+            result.append(ai)
+    return result
 
 
 # Pattern compilation
@@ -860,6 +833,13 @@ def _extract_lines(path):
     return _EXTRACTORS.get(Path(path).suffix.lower(), lambda _: None)(path)
 
 
+def _read_lines(path, is_special):
+    if is_special:
+        return _extract_lines(path)
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        return list(f)
+
+
 # Search worker
 
 def _process_file(args):
@@ -877,63 +857,35 @@ def _process_file(args):
         return None
 
     try:
+        lines = _read_lines(path, is_special)
+        if lines is None:
+            return None
+
         if opts["file"]:
             found = set()
-            lines_cache = []
-
-            if is_special:
-                lines_cache = _extract_lines(path)
-                if lines_cache is None:
-                    return None
-                for line in lines_cache:
-                    for i, p in enumerate(all_pats):
-                        if p.search(line):
-                            found.add(i)
-            else:
-                with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                    for line in f:
-                        lines_cache.append(line)
-                        for i, p in enumerate(all_pats):
-                            if p.search(line):
-                                found.add(i)
-
+            for line in lines:
+                for i, p in enumerate(all_pats):
+                    if p.search(line):
+                        found.add(i)
             if opts["or"]:
                 if not found:
                     return None
             else:
                 if found != set(range(len(all_pats))):
                     return None
-
             if opts["list"]:
                 return (item, [])
-
-            matches = []
-            for ln, line in enumerate(lines_cache, 1):
-                if any_pat.search(line):
-                    matches.append((ln, _column(line, any_pat), line))
+            matches = [(ln, _column(l, any_pat), l)
+                       for ln, l in enumerate(lines, 1) if any_pat.search(l)]
             return (item, matches)
 
-        else:
-            matches = []
-
-            if is_special:
-                special_lines = _extract_lines(path)
-                if special_lines is None:
-                    return None
-                for ln, line in enumerate(special_lines, 1):
-                    if combine(p.search(line) for p in all_pats):
-                        if opts["list"]:
-                            return (item, [])
-                        matches.append((ln, _column(line, any_pat), line))
-            else:
-                with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                    for ln, line in enumerate(f, 1):
-                        if combine(p.search(line) for p in all_pats):
-                            if opts["list"]:
-                                return (item, [])
-                            matches.append((ln, _column(line, any_pat), line))
-
-            return (item, matches) if matches else None
+        matches = []
+        for ln, line in enumerate(lines, 1):
+            if combine(p.search(line) for p in all_pats):
+                if opts["list"]:
+                    return (item, [])
+                matches.append((ln, _column(line, any_pat), line))
+        return (item, matches) if matches else None
 
     except Exception:
         return None
@@ -996,36 +948,27 @@ def _run_python(items, all_pats, any_pat, args, callback):
             except Exception:
                 pass
 
-def _make_ugrep_item(fpath, info, extracted):
+
+def _make_ugrep_item(fpath, walk_root, rel_display):
     p = Path(os.path.abspath(fpath))
     if not p.exists():
         return None
-    if info["kind"] == "archive":
-        if extracted is None:
-            return None
-        rel = p.relative_to(extracted).as_posix()
-        display = rel
-    elif info["kind"] == "dir":
-        try:
-            rel = p.relative_to(info["path"]).as_posix()
-        except ValueError:
-            rel = p.name
-        display = _display(p)
-    else:
+    try:
+        rel = p.relative_to(Path(os.path.abspath(str(walk_root)))).as_posix()
+    except ValueError:
         rel = p.name
-        display = _display(p)
-    return {"rel": rel, "path": str(p), "display": display}
+    return {"rel": rel, "path": str(p), "display": rel if rel_display else _display(p)}
 
 
 _UGREP_LINE_RE = re.compile(r"^(.*?):(\d+):(\d+):(.*)$", re.DOTALL)
 
-def _run_ugrep(info, extracted, args, callback):
+def _run_ugrep(walk_root, recursive, rel_display, args, callback):
     if not shutil.which("ugrep"):
         die("Missing required command: ugrep")
 
-    root = (extracted if extracted else info["path"]).as_posix()
+    root = str(walk_root)
     cmd = ["ugrep", "--no-messages", "--binary-files=without-match", "-H"]
-    if info["kind"] in ("dir", "archive"):
+    if recursive:
         cmd.append("-r")
     if not args["case"]:
         cmd.append("-i")
@@ -1066,7 +1009,7 @@ def _run_ugrep(info, extracted, args, callback):
     stdout = proc.stdout or ""
     if args["list"]:
         for fp in stdout.splitlines():
-            item = _make_ugrep_item(fp, info, extracted)
+            item = _make_ugrep_item(fp, walk_root, rel_display)
             if item:
                 callback((item, []))
     else:
@@ -1077,7 +1020,7 @@ def _run_ugrep(info, extracted, args, callback):
                 continue
             fp, ln, cn, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
             if fp not in results:
-                item = _make_ugrep_item(fp, info, extracted)
+                item = _make_ugrep_item(fp, walk_root, rel_display)
                 if item:
                     results[fp] = (item, [])
                 else:
@@ -1114,11 +1057,16 @@ def _run(args):
             eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {_display(outdir)}")
         return found
 
-    temp_root = None
+    _SUPPLEMENT_EXTS = ('.tar.zst',) + SPECIAL_EXTS
+    use_ugrep = (args["ugrep"] and not args["stream"] and not args["name"]
+                  and not (args["file"] and not args["or"]))
+
+    temp_roots = []
     try:
         extracted = None
         if info["kind"] == "archive":
             temp_root = Path(tempfile.mkdtemp(prefix="zxgrep.", dir=str(_pick_tmp_root())))
+            temp_roots.append(temp_root)
             _extract_archive(info["path"], temp_root)
             extracted = temp_root
 
@@ -1127,35 +1075,32 @@ def _run(args):
             if _is_within(str(outdir), str(info["path"])):
                 exclude = outdir
 
-        use_ugrep = args["ugrep"] and not args["stream"] and not args["name"]
-        if use_ugrep and args["file"] and not args["or"]:
-            use_ugrep = False
+        walk_root = extracted if info["kind"] == "archive" else info["path"]
+        w_exclude = exclude if info["kind"] == "dir" else None
+        w_reldisp = info["kind"] == "archive"
+        recursive = info["kind"] in ("dir", "archive")
 
-        ugrep_ok = False
-        if use_ugrep:
-            ugrep_ok = _run_ugrep(info, extracted, args, callback)
+        ugrep_ok = use_ugrep and _run_ugrep(walk_root, recursive, w_reldisp, args, callback)
 
-        if not ugrep_ok:
-            if info["kind"] == "archive":
-                items = list(_walk_archive(extracted, args["filters"]))
-            elif info["kind"] == "dir":
-                items = list(_walk_dir(info["path"], args["filters"], exclude))
-            else:
-                items = list(_walk_single(args["input"]))
-            if items:
-                _run_python(items, all_pats, any_pat, args, callback)
-        else:
-            specials = _find_specials(info, extracted, args["filters"], exclude)
-            if specials:
-                _run_python(specials, all_pats, any_pat, args, callback)
+        items = list(_walk(walk_root, args["filters"], w_exclude,
+                           _SUPPLEMENT_EXTS if ugrep_ok else None, w_reldisp))
+        arch_items = _expand_archives(items, args["filters"], temp_roots)
+        if arch_items:
+            items = [it for it in items if not it["path"].endswith(".tar.zst")] + arch_items
+        if ugrep_ok:
+            arch_ids = {id(ai) for ai in arch_items}
+            items = [it for it in items
+                     if Path(it["path"]).suffix.lower() in SPECIAL_EXTS or id(it) in arch_ids]
+        if items:
+            _run_python(items, all_pats, any_pat, args, callback)
 
         if outdir and found:
             eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {_display(outdir)}")
         return found
 
     finally:
-        if temp_root:
-            shutil.rmtree(temp_root, ignore_errors=True)
+        for tr in temp_roots:
+            shutil.rmtree(tr, ignore_errors=True)
 
 
 # Installation
