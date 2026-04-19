@@ -77,7 +77,7 @@ def usage():
   zxgrep --clean
 
 INPUT is auto-detected as:
-  1) a *.tar.zst archive
+  1) a compressed archive (.tar.zst, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, .tar, .zip)
   2) a directory (recursively process text files inside)
   3) a single text file
 
@@ -85,7 +85,7 @@ Notes:
   1) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
-     If INPUT is a tar.zst, it will be extracted to a temporary directory first
+     If INPUT is an archive, it will be extracted to a temporary directory first
      (prefers shared memory on Linux if available, otherwise system temp).
 
   2) --file mode:
@@ -177,7 +177,7 @@ Notes:
         --move   move instead
 
       To avoid name collisions, the relative directory structure is preserved.
-      - For tar.zst: preserve paths inside the archive
+      - For archives: preserve paths inside the archive
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
@@ -203,11 +203,11 @@ Notes:
         zxgrep archive.tar.zst exec -j 4
 
   18) --stream:
-      Stream processing for tar.zst archives.
+      Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
       Avoids high temporary disk usage for large archives.
-      For directory or single-file inputs, this flag has no effect.
+      For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
   19) --install:
@@ -248,6 +248,11 @@ Notes:
 
 Examples:
   zxgrep archive.tar.zst exec task
+  zxgrep archive.tar.gz exec task
+  zxgrep archive.tgz exec task
+  zxgrep archive.tar.bz2 exec task
+  zxgrep archive.tar.xz exec task
+  zxgrep archive.zip exec task
   zxgrep ./docs exec task
   zxgrep ./docs/a.txt exec task
   zxgrep ./docs/report.pdf exec task

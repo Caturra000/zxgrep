@@ -29,6 +29,11 @@ RIGHT_BOUNDARY = r"(?![0-9A-Za-z_])"
 
 SPECIAL_EXTS = ('.pdf', '.epub', '.mobi', '.azw3')
 
+_ARCHIVE_EXTS = ('.tar.zst', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar', '.zip')
+
+def _is_archive(path):
+    return any(path.endswith(e) for e in _ARCHIVE_EXTS)
+
 
 BASH_COMPLETION_SCRIPT = r'''# bash completion for zxgrep
 _zxgrep() {
@@ -146,7 +151,7 @@ def usage():
   {PROGRAM} --clean
 
 INPUT is auto-detected as:
-  1) a *.tar.zst archive
+  1) a compressed archive (.tar.zst, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, .tar, .zip)
   2) a directory (recursively process text files inside)
   3) a single text file
 
@@ -154,7 +159,7 @@ Notes:
   1) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
-     If INPUT is a tar.zst, it will be extracted to a temporary directory first
+     If INPUT is an archive, it will be extracted to a temporary directory first
      (prefers shared memory on Linux if available, otherwise system temp).
 
   2) --file mode:
@@ -246,7 +251,7 @@ Notes:
         --move   move instead
 
       To avoid name collisions, the relative directory structure is preserved.
-      - For tar.zst: preserve paths inside the archive
+      - For archives: preserve paths inside the archive
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
@@ -272,11 +277,11 @@ Notes:
         {PROGRAM} archive.tar.zst exec -j 4
 
   18) --stream:
-      Stream processing for tar.zst archives.
+      Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
       Avoids high temporary disk usage for large archives.
-      For directory or single-file inputs, this flag has no effect.
+      For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
   19) --install:
@@ -317,6 +322,11 @@ Notes:
 
 Examples:
   {PROGRAM} archive.tar.zst exec task
+  {PROGRAM} archive.tar.gz exec task
+  {PROGRAM} archive.tgz exec task
+  {PROGRAM} archive.tar.bz2 exec task
+  {PROGRAM} archive.tar.xz exec task
+  {PROGRAM} archive.zip exec task
   {PROGRAM} ./docs exec task
   {PROGRAM} ./docs/a.txt exec task
   {PROGRAM} ./docs/report.pdf exec task
@@ -568,22 +578,31 @@ def _detect(path):
     if p.is_dir():
         return {"kind": "dir", "path": p}
     if p.is_file():
-        return {"kind": "archive" if p.name.endswith(".tar.zst") else "file", "path": p}
+        return {"kind": "archive" if _is_archive(p.name) else "file", "path": p}
     die(f"Unsupported input type: {p}")
 
 
 def _extract_archive(archive, dest):
-    shutil.which("zstd") or die("Missing required command: zstd")
-    proc = subprocess.Popen(["zstd", "-d", "-T0", str(archive), "-c"], stdout=subprocess.PIPE)
-    try:
-        with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+    path = str(archive)
+    if path.endswith('.tar.zst'):
+        shutil.which("zstd") or die("Missing required command: zstd")
+        proc = subprocess.Popen(["zstd", "-d", "-T0", path, "-c"], stdout=subprocess.PIPE)
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+                kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+                tf.extractall(path=str(dest), **kwargs)
+        except Exception:
+            proc.terminate(); proc.wait(); raise
+        proc.wait()
+        if proc.returncode != 0:
+            die(f"zstd decompression failed with exit code {proc.returncode}")
+    elif path.endswith('.zip'):
+        with zipfile.ZipFile(path, "r") as zf:
+            zf.extractall(str(dest))
+    else:
+        with tarfile.open(path, 'r:*') as tf:
             kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
             tf.extractall(path=str(dest), **kwargs)
-    except Exception:
-        proc.terminate(); proc.wait(); raise
-    proc.wait()
-    if proc.returncode != 0:
-        die(f"zstd decompression failed with exit code {proc.returncode}")
 
 
 # File iteration
@@ -632,7 +651,7 @@ def _walk(root, filters, exclude=None, exts=None, rel_display=False):
 
 
 def _expand_archives(items, filters, temp_roots):
-    archives = [it for it in items if it["path"].endswith(".tar.zst")]
+    archives = [it for it in items if _is_archive(it["path"])]
     if not archives:
         return []
     result = []
@@ -1023,13 +1042,13 @@ def _run(args):
         _output(result[0], result[1], outdir, args["move"], args["color"], tty,
                 args["list"], args["name"], any_pat, args["flat"])
 
-    if info["kind"] == "archive" and args["stream"]:
+    if info["path"].name.endswith('.tar.zst') and args["stream"]:
         _run_stream(info, all_pats, any_pat, args, callback)
         if outdir and found:
             eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {_display(outdir)}")
         return found
 
-    _SUPPLEMENT_EXTS = ('.tar.zst',) + SPECIAL_EXTS
+    _SUPPLEMENT_EXTS = _ARCHIVE_EXTS + SPECIAL_EXTS
     use_ugrep = (args["ugrep"] and not args["stream"] and not args["name"]
                   and not (args["file"] and not args["or"]))
 
@@ -1058,7 +1077,7 @@ def _run(args):
                            _SUPPLEMENT_EXTS if ugrep_ok else None, w_reldisp))
         arch_items = _expand_archives(items, args["filters"], temp_roots)
         if arch_items:
-            items = [it for it in items if not it["path"].endswith(".tar.zst")] + arch_items
+            items = [it for it in items if not _is_archive(it["path"])] + arch_items
         if ugrep_ok:
             arch_ids = {id(ai) for ai in arch_items}
             items = [it for it in items
