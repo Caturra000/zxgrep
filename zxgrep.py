@@ -949,10 +949,11 @@ def _run_ugrep(walk_root, recursive, rel_display, args, callback):
         cmd.extend(["-g", f"!*{ext}"])
     f = args["filters"]
     if f:
+        norm = lambda p: p if p.startswith('*') else f"**/{p}"
         for p in f.get("include", []):
-            cmd.extend(["-g", p])
+            cmd.extend(["-g", norm(p)])
         for p in f.get("exclude", []):
-            cmd.extend(["-g", f"!{p}"])
+            cmd.extend(["-g", f"!{norm(p)}"])
     if args["list"]:
         cmd.append("-l")
     else:
