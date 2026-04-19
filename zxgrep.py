@@ -641,9 +641,11 @@ def _expand_archives(items, filters, temp_roots):
         temp_roots.append(tmp)
         _extract_archive(arch["path"], tmp)
         for ai in _walk(tmp, filters, rel_display=True):
-            ai["rel"] = arch["rel"] + "/" + ai["rel"]
-            ai["display"] = arch["display"] + "/" + ai["display"]
-            result.append(ai)
+            result.append({
+                "rel": arch["rel"] + "/" + ai["rel"],
+                "path": ai["path"],
+                "display": arch["display"] + "/" + ai["display"],
+            })
     return result
 
 
@@ -675,12 +677,10 @@ def _compile_all(words, mode, case):
 
 def _compile_any(words, mode, case):
     flags = 0 if case else re.IGNORECASE
-    if mode == "substr":
+    if mode in ("substr", "exact"):
         uniq = sorted(dict.fromkeys(words), key=len, reverse=True)
-        expr = "|".join(re.escape(w) for w in uniq)
-    elif mode == "exact":
-        uniq = sorted(dict.fromkeys(words), key=len, reverse=True)
-        expr = LEFT_BOUNDARY + "(?:" + "|".join(re.escape(w) for w in uniq) + ")" + RIGHT_BOUNDARY
+        inner = "|".join(re.escape(w) for w in uniq)
+        expr = (LEFT_BOUNDARY + "(?:" + inner + ")" + RIGHT_BOUNDARY) if mode == "exact" else inner
     else:
         expr = "|".join(f"(?:{w})" for w in words)
     try:
@@ -727,23 +727,26 @@ def _output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pa
 
 # Special file extraction
 
-def _extract_pdf(path):
-    if not shutil.which("pdftotext"):
-        return None
-    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxg_pdf_")
+def _cmd_to_lines(prefix, build_cmd, timeout=None):
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix=prefix)
     try:
         os.close(fd)
-        r = subprocess.run(["pdftotext", "-enc", "UTF-8", "-layout", str(path), tmp], capture_output=True)
+        r = subprocess.run(build_cmd(tmp), capture_output=True, timeout=timeout)
         if r.returncode != 0:
             return None
         with open(tmp, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        return lines or None
+            return f.readlines() or None
     except Exception:
         return None
     finally:
         try: os.unlink(tmp)
         except OSError: pass
+
+
+def _extract_pdf(path):
+    if not shutil.which("pdftotext"):
+        return None
+    return _cmd_to_lines("zxg_pdf_", lambda t: ["pdftotext", "-enc", "UTF-8", "-layout", str(path), t])
 
 
 class _EPUBParser(HTMLParser):
@@ -805,20 +808,7 @@ def _extract_epub(path):
 def _extract_ebook(path):
     if not shutil.which("ebook-convert"):
         return None
-    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="zxg_eb_")
-    try:
-        os.close(fd)
-        r = subprocess.run(["ebook-convert", str(path), tmp], capture_output=True, timeout=120)
-        if r.returncode != 0:
-            return None
-        with open(tmp, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        return lines or None
-    except Exception:
-        return None
-    finally:
-        try: os.unlink(tmp)
-        except OSError: pass
+    return _cmd_to_lines("zxg_eb_", lambda t: ["ebook-convert", str(path), t], timeout=120)
 
 
 _EXTRACTORS = {
@@ -848,45 +838,35 @@ def _process_file(args):
     combine = any if opts["or"] else all
 
     if opts["name"]:
-        name = Path(item["rel"]).name
-        matched = combine(p.search(name) for p in all_pats)
-        return (item, []) if matched else None
+        return (item, []) if combine(p.search(Path(item["rel"]).name) for p in all_pats) else None
 
     is_special = Path(path).suffix.lower() in SPECIAL_EXTS
     if not is_special and not _is_probably_text(path):
         return None
 
     try:
-        lines = _read_lines(path, is_special)
-        if lines is None:
+        raw = _read_lines(path, is_special)
+        if raw is None:
             return None
 
         if opts["file"]:
-            found = set()
-            for line in lines:
-                for i, p in enumerate(all_pats):
-                    if p.search(line):
-                        found.add(i)
-            if opts["or"]:
-                if not found:
-                    return None
-            else:
-                if found != set(range(len(all_pats))):
-                    return None
+            found = {i for l in raw for i, p in enumerate(all_pats) if p.search(l)}
+            if not (found if opts["or"] else found >= set(range(len(all_pats)))):
+                return None
             if opts["list"]:
                 return (item, [])
             matches = [(ln, _column(l, any_pat), l)
-                       for ln, l in enumerate(lines, 1) if any_pat.search(l)]
-            return (item, matches)
+                       for ln, l in enumerate(raw, 1) if any_pat.search(l)]
+        else:
+            matched = [(ln, l) for ln, l in enumerate(raw, 1)
+                       if combine(p.search(l) for p in all_pats)]
+            if not matched:
+                return None
+            if opts["list"]:
+                return (item, [])
+            matches = [(ln, _column(l, any_pat), l) for ln, l in matched]
 
-        matches = []
-        for ln, line in enumerate(lines, 1):
-            if combine(p.search(line) for p in all_pats):
-                if opts["list"]:
-                    return (item, [])
-                matches.append((ln, _column(line, any_pat), line))
         return (item, matches) if matches else None
-
     except Exception:
         return None
 
