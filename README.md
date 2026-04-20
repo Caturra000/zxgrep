@@ -36,7 +36,7 @@ macOS might be available, but hasn't been tested yet.
 ## Requirements
 
 - python
-- [zstd](https://github.com/facebook/zstd) (optional)
+- [zstd](https://github.com/facebook/zstd) (optional, or [zstandard](https://pypi.org/project/zstandard/))
 - [poppler](https://poppler.freedesktop.org/) (optional)
 - [calibre](https://calibre-ebook.com/) (optional)
 - [ugrep](https://github.com/Genivia/ugrep) (optional)
@@ -87,6 +87,7 @@ Notes:
      The same line must contain all keywords (AND mode).
      If INPUT is an archive, it will be extracted to a temporary directory first
      (prefers shared memory on Linux if available, otherwise system temp).
+     Note: .tar.zst requires the 'zstd' command or the 'zstandard' Python package.
 
   2) --file mode:
      Search by "file".
@@ -208,7 +209,9 @@ Notes:
       process files one by one directly from the tar stream.
       Avoids high temporary disk usage for large archives.
       For other archive formats, directories, or single files, this flag has no effect.
-      Note: -j/--jobs is ignored in stream mode (processing is sequential).
+      Notes:
+        -j/--jobs is ignored in stream mode (processing is sequential).
+        Requires 'zstd' command or 'zstandard' Python package.
 
   19) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).

@@ -161,6 +161,7 @@ Notes:
      The same line must contain all keywords (AND mode).
      If INPUT is an archive, it will be extracted to a temporary directory first
      (prefers shared memory on Linux if available, otherwise system temp).
+     Note: .tar.zst requires the 'zstd' command or the 'zstandard' Python package.
 
   2) --file mode:
      Search by "file".
@@ -282,7 +283,9 @@ Notes:
       process files one by one directly from the tar stream.
       Avoids high temporary disk usage for large archives.
       For other archive formats, directories, or single files, this flag has no effect.
-      Note: -j/--jobs is ignored in stream mode (processing is sequential).
+      Notes:
+        -j/--jobs is ignored in stream mode (processing is sequential).
+        Requires 'zstd' command or 'zstandard' Python package.
 
   19) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
@@ -582,20 +585,28 @@ def detect(path):
     die(f"Unsupported input type: {p}")
 
 
+def open_zst_stream(path):
+    if shutil.which("zstd"):
+        proc = subprocess.Popen(["zstd", "-d", "-T0", str(path), "-c"], stdout=subprocess.PIPE)
+        return proc.stdout, lambda: (proc.terminate(), proc.wait())
+    try:
+        import zstandard as zstd_mod
+    except ImportError:
+        die("Decompressing .tar.zst requires 'zstd' command or 'zstandard' package")
+    raw = open(str(path), 'rb')
+    return zstd_mod.ZstdDecompressor().stream_reader(raw), raw.close
+
+
 def extract_archive(archive, dest):
     path = str(archive)
     if path.endswith('.tar.zst'):
-        shutil.which("zstd") or die("Missing required command: zstd")
-        proc = subprocess.Popen(["zstd", "-d", "-T0", path, "-c"], stdout=subprocess.PIPE)
+        stream, cleanup = open_zst_stream(path)
         try:
-            with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+            with tarfile.open(fileobj=stream, mode="r|") as tf:
                 kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
                 tf.extractall(path=str(dest), **kwargs)
-        except Exception:
-            proc.terminate(); proc.wait(); raise
-        proc.wait()
-        if proc.returncode != 0:
-            die(f"zstd decompression failed with exit code {proc.returncode}")
+        finally:
+            cleanup()
     elif path.endswith('.zip'):
         with zipfile.ZipFile(path, "r") as zf:
             zf.extractall(str(dest))
@@ -894,12 +905,11 @@ def process_batch(batch_args):
 # Search engines
 
 def run_stream(info, all_pats, any_pat, args, callback):
-    shutil.which("zstd") or die("Missing required command: zstd")
-    proc = subprocess.Popen(["zstd", "-d", "-T0", str(info["path"]), "-c"], stdout=subprocess.PIPE)
     tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
     opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"]}
+    stream, cleanup = open_zst_stream(str(info["path"]))
     try:
-        with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+        with tarfile.open(fileobj=stream, mode="r|") as tf:
             for member in tf:
                 if not member.isfile():
                     continue
@@ -918,7 +928,7 @@ def run_stream(info, all_pats, any_pat, args, callback):
                 except FileNotFoundError: pass
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-        proc.terminate(); proc.wait()
+        cleanup()
 
 
 def run_python(items, all_pats, any_pat, args, callback):
