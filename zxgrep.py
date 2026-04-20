@@ -150,31 +150,63 @@ def usage():
   {PROGRAM} --print-bash-completion
   {PROGRAM} --clean
 
-INPUT is auto-detected as:
-  1) a compressed archive (.tar.zst, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, .tar, .zip)
-  2) a directory (recursively process text files inside)
-  3) a single text file
+--- Input & File Formats ---
 
-Notes:
-  1) Default mode:
+  1) INPUT is auto-detected as:
+     - An archive (.tar.zst, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, .tar, .zip)
+     - A directory (recursively process text files inside)
+     - A single text file
+     .tar.zst requires the 'zstd' command or the 'zstandard' Python package:
+       Linux:   sudo apt install zstd  (or: pip install zstandard)
+       Windows: choco install zstd     (or: pip install zstandard)
+     Other archive formats use the Python standard library (no external dependency).
+     Archives are extracted to a temporary directory first
+     (prefers shared memory on Linux if available, otherwise system temp).
+
+  2) Text file detection:
+     For directory/single-file input, obvious binary files are skipped (simple NUL-byte check).
+
+  3) PDF support (.pdf):
+     Files ending in .pdf are automatically extracted and searched.
+     Requires the 'pdftotext' command (part of Poppler):
+       Linux:   sudo apt install poppler-utils
+       Windows: choco install poppler (or scoop install poppler)
+     If 'pdftotext' is not installed, PDF files are silently skipped.
+
+  4) eBook support (.epub / .mobi / .azw3):
+     - .epub files are parsed natively using the Python standard library (no external
+       dependencies). HTML/XHTML content inside the EPUB archive is extracted as plain text.
+     - .mobi and .azw3 files require the 'ebook-convert' command (part of Calibre):
+         Linux:   sudo apt install calibre
+         Windows: choco install calibre
+       If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
+
+--- Matching ---
+
+  5) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
-     If INPUT is an archive, it will be extracted to a temporary directory first
-     (prefers shared memory on Linux if available, otherwise system temp).
-     Note: .tar.zst requires the 'zstd' command or the 'zstandard' Python package.
 
-  2) --file mode:
+  6) --file mode:
      Search by "file".
      The same file must contain all keywords; the keywords do not need to be on the same line.
      By default, output lines that contain any keyword/expression in those files, with highlighting.
 
-  3) Default matching:
+  7) -N / --name-only:
+     Search only on the "filename itself" (basename), not file contents.
+     This mode automatically operates at file level and only outputs matched file paths.
+     Also supports -o/-O, --copy, --move.
+     Example:
+       {PROGRAM} ./docs report -N
+       {PROGRAM} ./docs 'report.*2024' -N -r
+
+  8) Default matching:
      Non-exact + case-insensitive
      i.e., normal substring matching.
      Example keyword exec:
        Can match: exec, execution, EXEC, my_exec_call
 
-  4) -x / --exact:
+  9) -x / --exact:
      Enable exact matching.
      Exact match is defined as:
        characters before/after the keyword cannot be English letters / digits / underscore
@@ -182,58 +214,53 @@ Notes:
        Matches: " exec ", "(exec)", "exec;"
        Does not match: "execution", "my_exec_var", "exec123"
 
-  5) -r / --regex:
-     Enable regex matching.
-     Each WORD is treated as a regular expression.
-     Multiple keywords are still supported.
-     Matching is still line-based; multi-line regex across lines is not supported.
+  10) -r / --regex:
+      Enable regex matching.
+      Each WORD is treated as a regular expression.
+      Multiple keywords are still supported.
+      Matching is still line-based; multi-line regex across lines is not supported.
 
-  6) -s / --case-sensitive:
-     Enable case-sensitive matching.
+  11) -s / --case-sensitive:
+      Enable case-sensitive matching.
 
-  7) --or:
-     Use OR logic to connect multiple keywords (default is AND).
-     - Default (AND): must contain all keywords
-     - OR mode: match if any keyword is present
-     Example:
-       {PROGRAM} ./docs exec task        # AND: must contain both exec and task
-       {PROGRAM} ./docs exec task --or   # OR:  contains exec or task
+  12) --or:
+      Use OR logic to connect multiple keywords (default is AND).
+      - Default (AND): must contain all keywords
+      - OR mode: match if any keyword is present
+      Example:
+        {PROGRAM} ./docs exec task        # AND: must contain both exec and task
+        {PROGRAM} ./docs exec task --or   # OR:  contains exec or task
 
-  8) --include GLOB:
-     Only search files whose basename matches the specified glob pattern.
-     Matching is based on the file basename (without directories).
-     Can be specified multiple times to add multiple patterns (any match is accepted).
-     Example:
-       {PROGRAM} ./docs exec --include '*.py'
-       {PROGRAM} ./docs exec --include '*.py' --include '*.js'
+--- Filtering ---
 
-  9) --exclude GLOB:
-     Exclude files whose names match the specified glob pattern.
-     Matches against basename and relative path (either match excludes).
-     Can be specified multiple times to add multiple patterns.
-     Example:
-       {PROGRAM} ./docs exec --exclude '*.log'
-       {PROGRAM} ./docs exec --exclude 'node_modules' --exclude '*.min.js'
+  13) --include GLOB:
+      Only search files whose basename matches the specified glob pattern.
+      Matching is based on the file basename (without directories).
+      Can be specified multiple times to add multiple patterns (any match is accepted).
+      Example:
+        {PROGRAM} ./docs exec --include '*.py'
+        {PROGRAM} ./docs exec --include '*.py' --include '*.js'
 
-  10) -l / --list-files:
+  14) --exclude GLOB:
+      Exclude files whose names match the specified glob pattern.
+      Matches against basename and relative path (either match excludes).
+      Can be specified multiple times to add multiple patterns.
+      Example:
+        {PROGRAM} ./docs exec --exclude '*.log'
+        {PROGRAM} ./docs exec --exclude 'node_modules' --exclude '*.min.js'
+
+--- Output ---
+
+  15) -l / --list-files:
       Only list matched file paths, do not output matched lines.
       - In default mode: list files that have at least one line matching all keywords
       - In --file mode: list files that contain all keywords
 
-  11) -N / --name-only:
-      Search only on the "filename itself", not file contents.
-      Here "filename" means basename, excluding parent directories.
-      This mode automatically operates at file level and only outputs matched file paths.
-      Also supports -o/-O, --copy, --move.
-      Example:
-        {PROGRAM} ./docs report -N
-        {PROGRAM} ./docs 'report.*2024' -N -r
-
-  12) Default output includes line and column numbers:
+  16) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  13) Path coloring:
+  17) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -241,7 +268,7 @@ Notes:
       Explicitly enable (default behavior):
         --color-path
 
-  14) -o / -O:
+  18) -o / -O:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -256,7 +283,7 @@ Notes:
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  15) --flat:
+  19) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -266,10 +293,9 @@ Notes:
         {PROGRAM} ./docs exec task -O --flat
         # Results in: zxgrep_exec+task/file1.txt, zxgrep_exec+task/file1.conflict-1.txt
 
-  16) Text file detection:
-      For directory/single-file input, obvious binary files are skipped (simple NUL-byte check).
+--- Performance ---
 
-  17) -j / --jobs:
+  20) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -277,40 +303,15 @@ Notes:
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-  18) --stream:
+  21) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
       Avoids high temporary disk usage for large archives.
       For other archive formats, directories, or single files, this flag has no effect.
-      Notes:
-        -j/--jobs is ignored in stream mode (processing is sequential).
-        Requires 'zstd' command or 'zstandard' Python package.
+      Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  19) --install:
-      Install to /usr/local/bin/zxgrep and bash completion (Unix).
-      On Windows, creates zxgrep.cmd launcher and adds to user PATH.
-
-  20) --clean:
-      Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
-      You will be prompted for confirmation before deletion.
-
-  21) PDF support:
-      Files ending in .pdf are automatically extracted and searched.
-      Requires the 'pdftotext' command (part of Poppler):
-        Linux:   sudo apt install poppler-utils
-        Windows: choco install poppler (or scoop install poppler)
-      If 'pdftotext' is not installed, PDF files are silently skipped.
-
-  22) eBook support (EPUB / MOBI / AZW3):
-      - .epub files are parsed natively using the Python standard library (no external
-        dependencies). HTML/XHTML content inside the EPUB archive is extracted as plain text.
-      - .mobi and .azw3 files require the 'ebook-convert' command (part of Calibre):
-          Linux:   sudo apt install calibre
-          Windows: choco install calibre
-        If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
-
-  23) --ugrep:
+  22) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -322,6 +323,16 @@ Notes:
         - --name-only mode
         - --file mode with AND logic (cross-line AND)
         - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
+
+--- Commands ---
+
+  23) --install:
+      Install to /usr/local/bin/zxgrep and bash completion (Unix).
+      On Windows, creates zxgrep.cmd launcher and adds to user PATH.
+
+  24) --clean:
+      Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
+      You will be prompted for confirmation before deletion.
 
 Examples:
   {PROGRAM} archive.tar.zst exec task
