@@ -43,7 +43,7 @@ macOS might be available, but hasn't been tested yet.
 
 ## Installation
 
-1. Run `curl -fsSL https://raw.githubusercontent.com/Caturra000/zxgrep/master/install.sh | python`
+1. Run `curl -fsSL https://raw.githubusercontent.com/Caturra000/zxgrep/script/install | python`
 2. OK. Let's try a simple [example](#example) using the `zxgrep` command.
 
 Alternatively,
