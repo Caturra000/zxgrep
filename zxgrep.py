@@ -985,6 +985,8 @@ def run_ugrep(walk_root, recursive, rel_display, args, callback):
         cmd.append("-i")
     if args["mode"] == "exact":
         cmd.append("-P")
+    if args["mode"] == "substr":
+        cmd.append("-F")
     for ext in SPECIAL_EXTS:
         cmd.extend(["-g", f"!*{ext}"])
     f = args["filters"]
