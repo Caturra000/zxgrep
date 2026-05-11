@@ -49,7 +49,7 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip -h -s -x -r -l -N -o -O -j --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip --max-count -h -s -x -r -l -N -o -O -j -m --jobs"
 
     if [[ "$prev" == "-o" ]]; then
         compopt -o filenames 2>/dev/null
@@ -78,7 +78,7 @@ _zxgrep() {
         case "${COMP_WORDS[i]}" in
             --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
                 ;;
-            -o|-j|--jobs|--include|--exclude)
+            -o|-j|--jobs|--include|--exclude|-m|--max-count)
                 ((i++))
                 ;;
             --)
@@ -143,6 +143,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] --or
   {PROGRAM} INPUT WORD1 [WORD2 ...] --include '*.py' --exclude 'test_*'
   {PROGRAM} INPUT WORD1 [WORD2 ...] -l
+  {PROGRAM} INPUT WORD1 [WORD2 ...] -m 5
   {PROGRAM} INPUT WORD1 [WORD2 ...] -N
   {PROGRAM} INPUT WORD1 [WORD2 ...] -j 8
   {PROGRAM} INPUT WORD1 [WORD2 ...] --stream
@@ -184,31 +185,31 @@ def usage():
          Windows: choco install calibre
        If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
 
-   5) --strip:
-      Strip Markup syntax from Markup files (.md, .html, etc.)
-      before searching, keeping only plain text content.
-      Non-markup files are left untouched.
-      Removes: Markdown/HTML formatting, HTML tags, <script>/<style> blocks,
-      HTML comments, while preserving body text.
-      All existing features (including -o, -x, -r, --file, etc.) are supported.
-      When combined with --ugrep, --strip forces a fallback to the Python engine
-      because ugrep cannot search pre-stripped content natively.
-      Example:
-        {PROGRAM} ./docs exec --strip
-        {PROGRAM} archive.tar.zst exec --strip -x -s
+  5) --strip:
+     Strip Markup syntax from Markup files (.md, .html, etc.)
+     before searching, keeping only plain text content.
+     Non-markup files are left untouched.
+     Removes: Markdown/HTML formatting, HTML tags, <script>/<style> blocks,
+     HTML comments, while preserving body text.
+     All existing features (including -o, -x, -r, --file, etc.) are supported.
+     When combined with --ugrep, --strip forces a fallback to the Python engine
+     because ugrep cannot search pre-stripped content natively.
+     Example:
+       {PROGRAM} ./docs exec --strip
+       {PROGRAM} archive.tar.zst exec --strip -x -s
 
 --- Matching ---
 
-   6) Default mode:
+  6) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
 
-   7) --file mode:
+  7) --file mode:
      Search by "file".
      The same file must contain all keywords; the keywords do not need to be on the same line.
      By default, output lines that contain any keyword/expression in those files, with highlighting.
 
-   8) -N / --name-only:
+  8) -N / --name-only:
      Search only on the "filename itself" (basename), not file contents.
      This mode automatically operates at file level and only outputs matched file paths.
      Also supports -o/-O, --copy, --move.
@@ -216,13 +217,13 @@ def usage():
        {PROGRAM} ./docs report -N
        {PROGRAM} ./docs 'report.*2024' -N -r
 
-   9) Default matching:
+  9) Default matching:
      Non-exact + case-insensitive
      i.e., normal substring matching.
      Example keyword exec:
        Can match: exec, execution, EXEC, my_exec_call
 
-   10) -x / --exact:
+  10) -x / --exact:
      Enable exact matching.
      Exact match is defined as:
        characters before/after the keyword cannot be English letters / digits / underscore
@@ -230,16 +231,16 @@ def usage():
        Matches: " exec ", "(exec)", "exec;"
        Does not match: "execution", "my_exec_var", "exec123"
 
-   11) -r / --regex:
+  11) -r / --regex:
       Enable regex matching.
       Each WORD is treated as a regular expression.
       Multiple keywords are still supported.
       Matching is still line-based; multi-line regex across lines is not supported.
 
-   12) -s / --case-sensitive:
+  12) -s / --case-sensitive:
       Enable case-sensitive matching.
 
-   13) --or:
+  13) --or:
       Use OR logic to connect multiple keywords (default is AND).
       - Default (AND): must contain all keywords
       - OR mode: match if any keyword is present
@@ -249,7 +250,7 @@ def usage():
 
 --- Filtering ---
 
-   14) --include GLOB:
+  14) --include GLOB:
       Only search files whose basename matches the specified glob pattern.
       Matching is based on the file basename (without directories).
       Can be specified multiple times to add multiple patterns (any match is accepted).
@@ -257,7 +258,7 @@ def usage():
         {PROGRAM} ./docs exec --include '*.py'
         {PROGRAM} ./docs exec --include '*.py' --include '*.js'
 
-   15) --exclude GLOB:
+  15) --exclude GLOB:
       Exclude files whose names match the specified glob pattern.
       Matches against basename and relative path (either match excludes).
       Can be specified multiple times to add multiple patterns.
@@ -267,16 +268,25 @@ def usage():
 
 --- Output ---
 
-   16) -l / --list-files:
+  16) -l / --list-files:
       Only list matched file paths, do not output matched lines.
       - In default mode: list files that have at least one line matching all keywords
       - In --file mode: list files that contain all keywords
 
-   17) Default output includes line and column numbers:
+  17) -m / --max-count N:
+      Stop after N matches per file.
+      In line mode: output at most N matching lines per file.
+      In --file mode: output at most N lines (among those containing any keyword).
+      Has no effect with -l or -N.
+      Example:
+        {PROGRAM} ./docs exec -m 3
+        {PROGRAM} ./docs exec task --file -m 5
+
+  18) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-   18) Path coloring:
+  19) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -284,7 +294,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-   19) -o / -O:
+  20) -o / -O:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -299,7 +309,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-   20) --flat:
+  21) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -311,7 +321,7 @@ def usage():
 
 --- Performance ---
 
-   21) -j / --jobs:
+  22) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -319,7 +329,7 @@ def usage():
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-   22) --stream:
+  23) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -327,7 +337,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-   23) --ugrep:
+  24) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -342,11 +352,11 @@ def usage():
 
 --- Commands ---
 
-   24) --install:
+   25) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-   25) --clean:
+   26) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -373,6 +383,7 @@ Examples:
   {PROGRAM} ./docs exec --include '*.py'
   {PROGRAM} ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   {PROGRAM} ./docs exec task -l
+  {PROGRAM} ./docs exec task -m 5
   {PROGRAM} ./docs exec task -O --move
   {PROGRAM} ./docs exec task -O --flat
   {PROGRAM} ./docs report -N
@@ -413,6 +424,7 @@ OPTIONS = [
     ("--flat",                  None, False, False, False,  None),
     ("--ugrep",                 None, False, False, False,  None),
     ("--strip",                 None, False, False, False,  None),
+    ("--max-count",             "-m", True,  False, None,   None),
 ]
 
 OPT_BY_FLAG = {}
@@ -526,6 +538,8 @@ def parse(argv):
 
     jobs = parse_jobs(args["--jobs"]) if args["--jobs"] is not None else (os.cpu_count() or 4)
 
+    max_count = parse_jobs(args["--max-count"]) if args["--max-count"] is not None else None
+
     filters = None
     if args["--include"] or args["--exclude"]:
         filters = {"include": args["--include"], "exclude": args["--exclude"]}
@@ -541,7 +555,7 @@ def parse(argv):
         "move": args["--move"], "color": args["--color-path"],
         "jobs": jobs, "filters": filters, "stream": args["--stream"],
         "flat": args["--flat"], "ugrep": args["--ugrep"],
-        "strip": args["--strip"],
+        "strip": args["--strip"], "max_count": max_count,
     }
 
 
@@ -930,6 +944,7 @@ def process_file(args):
         return None
 
     do_strip = opts.get("strip") and is_markup_file(path)
+    maxc = opts.get("max_count")
 
     try:
         if is_special:
@@ -959,6 +974,8 @@ def process_file(args):
                 return (item, [])
             matches = [(ln, column(l, any_pat), l) for ln, l in matched]
 
+        if maxc is not None:
+            matches = matches[:maxc]
         return (item, matches) if matches else None
     except Exception:
         return None
@@ -978,7 +995,7 @@ def process_batch(batch_args):
 
 def run_stream(info, all_pats, any_pat, args, callback):
     tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"]}
     stream, cleanup = open_zst_stream(str(info["path"]))
     try:
         with tarfile.open(fileobj=stream, mode="r|") as tf:
@@ -1004,7 +1021,7 @@ def run_stream(info, all_pats, any_pat, args, callback):
 
 
 def run_python(items, all_pats, any_pat, args, callback):
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"]}
     jobs = args["jobs"]
     n = len(items)
     chunk_size = max(1, n // (jobs * 4))
@@ -1061,6 +1078,8 @@ def run_ugrep(walk_root, recursive, rel_display, args, callback):
         cmd.append("-l")
     else:
         cmd.extend(["-n", "-k", "--color=never"])
+    if args["max_count"] is not None:
+        cmd.extend(["-m", str(args["max_count"])])
     wrap = (lambda w: f"(?<![0-9A-Za-z_]){re.escape(w)}(?![0-9A-Za-z_])") if args["mode"] == "exact" else (lambda w: w)
     if args["or"]:
         for w in args["words"]:
