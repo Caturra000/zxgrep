@@ -571,37 +571,6 @@ def is_probably_text(path):
         return False
 
 
-class StripHTMLParser(HTMLParser):
-    SKIP = frozenset({'script', 'style', 'head'})
-    BLOCK = frozenset({
-        'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr',
-        'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside',
-        'main', 'figure', 'figcaption', 'details', 'summary', 'dl', 'dt', 'dd',
-        'pre', 'hr', 'table', 'thead', 'tbody', 'tfoot', 'th', 'td',
-    })
-
-    def __init__(self):
-        super().__init__()
-        self._parts = []
-        self._skip = 0
-
-    def handle_starttag(self, tag, attrs):
-        t = tag.lower()
-        if t in self.SKIP: self._skip += 1
-        if t in self.BLOCK: self._parts.append('\n')
-
-    def handle_endtag(self, tag):
-        t = tag.lower()
-        if t in self.SKIP: self._skip = max(0, self._skip - 1)
-        if t in self.BLOCK: self._parts.append('\n')
-
-    def handle_data(self, data):
-        if self._skip == 0:
-            self._parts.append(data)
-
-    def handle_comment(self, data):
-        pass
-
 
 MD_RE = re.compile(
     r'^```[^`\n]*$'                            # fenced code block
@@ -634,7 +603,7 @@ def md_replace(m):
 def strip_markup(text):
     text = MD_RE.sub(md_replace, text)
     text = re.sub(r'^\|(.+)\|$', r'\1', text, flags=re.MULTILINE)
-    parser = StripHTMLParser()
+    parser = MarkupParser()
     parser.feed(text)
     return ''.join(parser._parts)
 
@@ -881,7 +850,7 @@ def extract_pdf(path):
     return cmd_to_lines("zxg_pdf_", lambda t: ["pdftotext", "-enc", "UTF-8", "-layout", str(path), t])
 
 
-class EPUBParser(HTMLParser):
+class MarkupParser(HTMLParser):
     BLOCK = frozenset({
         'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr',
         'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside',
@@ -916,7 +885,7 @@ def extract_epub(path):
             names = sorted(n for n in zf.namelist()
                            if n.lower().endswith(('.html', '.htm', '.xhtml'))
                            and not n.startswith('META-INF/') and n != 'mimetype')
-            parser = EPUBParser()
+            parser = MarkupParser()
             for name in names:
                 try:
                     parser.feed(zf.read(name).decode('utf-8', errors='replace'))
@@ -965,12 +934,10 @@ def process_file(args):
     try:
         if is_special:
             raw = extract_lines(path)
-        elif do_strip:
-            with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                raw = strip_markup(f.read()).splitlines(True)
         else:
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                raw = list(f)
+                text = f.read()
+            raw = strip_markup(text).splitlines(True) if do_strip else text.splitlines(True)
         if raw is None:
             return None
 
