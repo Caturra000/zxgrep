@@ -936,8 +936,9 @@ def process_file(args):
             raw = extract_lines(path)
         else:
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                text = f.read()
-            raw = strip_markup(text).splitlines(True) if do_strip else text.splitlines(True)
+                raw = list(f)
+            if do_strip:
+                raw = [strip_markup(l) for l in raw]
         if raw is None:
             return None
 
