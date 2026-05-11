@@ -72,6 +72,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] --stream
   zxgrep INPUT WORD1 [WORD2 ...] -O --flat
   zxgrep INPUT WORD1 [WORD2 ...] --ugrep
+  zxgrep INPUT WORD1 [WORD2 ...] --strip
   zxgrep --install
   zxgrep --print-bash-completion
   zxgrep --clean
@@ -107,18 +108,31 @@ def usage():
          Windows: choco install calibre
        If 'ebook-convert' is not installed, MOBI/AZW3 files are silently skipped.
 
+   5) --strip:
+      Strip Markup syntax from Markup files (.md, .html, etc.)
+      before searching, keeping only plain text content.
+      Non-markup files are left untouched.
+      Removes: Markdown/HTML formatting, HTML tags, <script>/<style> blocks,
+      HTML comments, while preserving body text.
+      All existing features (including -o, -x, -r, --file, etc.) are supported.
+      When combined with --ugrep, --strip forces a fallback to the Python engine
+      because ugrep cannot search pre-stripped content natively.
+      Example:
+        zxgrep ./docs exec --strip
+        zxgrep archive.tar.zst exec --strip -x -s
+
 --- Matching ---
 
-  5) Default mode:
+   6) Default mode:
      Search by "line".
      The same line must contain all keywords (AND mode).
 
-  6) --file mode:
+   7) --file mode:
      Search by "file".
      The same file must contain all keywords; the keywords do not need to be on the same line.
      By default, output lines that contain any keyword/expression in those files, with highlighting.
 
-  7) -N / --name-only:
+   8) -N / --name-only:
      Search only on the "filename itself" (basename), not file contents.
      This mode automatically operates at file level and only outputs matched file paths.
      Also supports -o/-O, --copy, --move.
@@ -126,13 +140,13 @@ def usage():
        zxgrep ./docs report -N
        zxgrep ./docs 'report.*2024' -N -r
 
-  8) Default matching:
+   9) Default matching:
      Non-exact + case-insensitive
      i.e., normal substring matching.
      Example keyword exec:
        Can match: exec, execution, EXEC, my_exec_call
 
-  9) -x / --exact:
+   10) -x / --exact:
      Enable exact matching.
      Exact match is defined as:
        characters before/after the keyword cannot be English letters / digits / underscore
@@ -140,16 +154,16 @@ def usage():
        Matches: " exec ", "(exec)", "exec;"
        Does not match: "execution", "my_exec_var", "exec123"
 
-  10) -r / --regex:
+   11) -r / --regex:
       Enable regex matching.
       Each WORD is treated as a regular expression.
       Multiple keywords are still supported.
       Matching is still line-based; multi-line regex across lines is not supported.
 
-  11) -s / --case-sensitive:
+   12) -s / --case-sensitive:
       Enable case-sensitive matching.
 
-  12) --or:
+   13) --or:
       Use OR logic to connect multiple keywords (default is AND).
       - Default (AND): must contain all keywords
       - OR mode: match if any keyword is present
@@ -159,7 +173,7 @@ def usage():
 
 --- Filtering ---
 
-  13) --include GLOB:
+   14) --include GLOB:
       Only search files whose basename matches the specified glob pattern.
       Matching is based on the file basename (without directories).
       Can be specified multiple times to add multiple patterns (any match is accepted).
@@ -167,7 +181,7 @@ def usage():
         zxgrep ./docs exec --include '*.py'
         zxgrep ./docs exec --include '*.py' --include '*.js'
 
-  14) --exclude GLOB:
+   15) --exclude GLOB:
       Exclude files whose names match the specified glob pattern.
       Matches against basename and relative path (either match excludes).
       Can be specified multiple times to add multiple patterns.
@@ -177,16 +191,16 @@ def usage():
 
 --- Output ---
 
-  15) -l / --list-files:
+   16) -l / --list-files:
       Only list matched file paths, do not output matched lines.
       - In default mode: list files that have at least one line matching all keywords
       - In --file mode: list files that contain all keywords
 
-  16) Default output includes line and column numbers:
+   17) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  17) Path coloring:
+   18) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -194,7 +208,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  18) -o / -O:
+   19) -o / -O:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -209,7 +223,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  19) --flat:
+   20) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -221,7 +235,7 @@ def usage():
 
 --- Performance ---
 
-  20) -j / --jobs:
+   21) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -229,7 +243,7 @@ def usage():
         zxgrep ./docs exec task -j 8
         zxgrep archive.tar.zst exec -j 4
 
-  21) --stream:
+   22) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -237,7 +251,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  22) --ugrep:
+   23) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -252,11 +266,11 @@ def usage():
 
 --- Commands ---
 
-  23) --install:
+   24) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-  24) --clean:
+   25) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -291,6 +305,7 @@ Examples:
   zxgrep archive.tar.zst exec task --stream
   zxgrep ./docs exec task --ugrep
   zxgrep ./docs exec task --ugrep --file --or
+  zxgrep ./docs exec task --strip
   zxgrep --clean
 """)
 ```
