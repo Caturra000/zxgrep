@@ -20,6 +20,7 @@ PROGRAM = "zxgrep"
 
 RED = "\033[01;31m"
 CYAN = "\033[01;36m"
+DIM = "\033[02;36m"
 RESET = "\033[0m"
 
 # Boundary definition for exact match:
@@ -78,7 +79,7 @@ _zxgrep() {
         case "${COMP_WORDS[i]}" in
             --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
                 ;;
-            -o|-j|--jobs|--include|--exclude|-m|--max-count)
+            -o|-j|--jobs|--include|--exclude|-m|--max-count|-A|-B|-C)
                 ((i++))
                 ;;
             --)
@@ -144,6 +145,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] --include '*.py' --exclude 'test_*'
   {PROGRAM} INPUT WORD1 [WORD2 ...] -l
   {PROGRAM} INPUT WORD1 [WORD2 ...] -m 5
+  {PROGRAM} INPUT WORD1 [WORD2 ...] -C 2
   {PROGRAM} INPUT WORD1 [WORD2 ...] -N
   {PROGRAM} INPUT WORD1 [WORD2 ...] -j 8
   {PROGRAM} INPUT WORD1 [WORD2 ...] --stream
@@ -282,11 +284,24 @@ def usage():
         {PROGRAM} ./docs exec -m 3
         {PROGRAM} ./docs exec task --file -m 5
 
-  18) Default output includes line and column numbers:
+  18) -A / -B / -C N:
+      Show N lines of context around each match.
+      -A N: show N lines after each match.
+      -B N: show N lines before each match.
+      -C N: show N lines before and after each match (equivalent to -A N -B N).
+      Context lines are displayed with column 0 (dimmed path), match lines
+      keep the usual highlighting. Overlapping windows from adjacent matches
+      are merged automatically.
+      Has no effect with -l or -N.
+      Example:
+        {PROGRAM} ./docs exec -C 2
+        {PROGRAM} ./docs exec -A 3 -B 1
+
+  19) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  19) Path coloring:
+  20) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -294,7 +309,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  20) -o / -O:
+  21) -o / -O:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -309,7 +324,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  21) --flat:
+  22) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -321,7 +336,7 @@ def usage():
 
 --- Performance ---
 
-  22) -j / --jobs:
+  23) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -329,7 +344,7 @@ def usage():
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-  23) --stream:
+  24) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -337,7 +352,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  24) --ugrep:
+  25) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -352,11 +367,11 @@ def usage():
 
 --- Commands ---
 
-   25) --install:
+   26) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-   26) --clean:
+   27) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -384,6 +399,7 @@ Examples:
   {PROGRAM} ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   {PROGRAM} ./docs exec task -l
   {PROGRAM} ./docs exec task -m 5
+  {PROGRAM} ./docs exec task -C 2
   {PROGRAM} ./docs exec task -O --move
   {PROGRAM} ./docs exec task -O --flat
   {PROGRAM} ./docs report -N
@@ -425,6 +441,9 @@ OPTIONS = [
     ("--ugrep",                 None, False, False, False,  None),
     ("--strip",                 None, False, False, False,  None),
     ("--max-count",             "-m", True,  False, None,   None),
+    ("-A",                      None, True,  False, 0,      None),
+    ("-B",                      None, True,  False, 0,      None),
+    ("-C",                      None, True,  False, 0,      None),
 ]
 
 OPT_BY_FLAG = {}
@@ -540,6 +559,12 @@ def parse(argv):
 
     max_count = parse_jobs(args["--max-count"]) if args["--max-count"] is not None else None
 
+    if args["-C"]:
+        args["-A"] = args["-C"]
+        args["-B"] = args["-C"]
+    after = parse_jobs(args["-A"]) if args["-A"] else 0
+    before = parse_jobs(args["-B"]) if args["-B"] else 0
+
     filters = None
     if args["--include"] or args["--exclude"]:
         filters = {"include": args["--include"], "exclude": args["--exclude"]}
@@ -556,6 +581,7 @@ def parse(argv):
         "jobs": jobs, "filters": filters, "stream": args["--stream"],
         "flat": args["--flat"], "ugrep": args["--ugrep"],
         "strip": args["--strip"], "max_count": max_count,
+        "after": after, "before": before,
     }
 
 
@@ -815,10 +841,6 @@ def column(line, pat):
     return (m.start() + 1) if m else 1
 
 
-def label(path, ln, cn, color, tty):
-    text = f"{path}:{ln}:{cn}"
-    return f"{CYAN}{text}{RESET}" if color and tty else text
-
 
 def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat, flat):
     if outdir:
@@ -833,10 +855,16 @@ def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat
         sys.stdout.write(text + "\n")
         sys.stdout.flush()
     else:
+        ln_w = max(len(str(ln)) for ln, _, _ in matches)
+        col_w = max((len(str(cn)) for _, cn, _ in matches if cn != 0), default=1)
         for ln, cn, line in matches:
-            prefix = label(disp, ln, cn, color, tty)
-            colored = colorize(line, any_pat) if tty else line.rstrip("\r\n")
-            sys.stdout.write(f"{prefix}: {colored}\n")
+            if cn == 0:
+                prefix = f"{DIM}{disp}:{ln:0{ln_w}d}:{0:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{0:0{col_w}d}"
+                sys.stdout.write(f"{prefix}: {line.rstrip('\r\n')}\n")
+            else:
+                prefix = f"{CYAN}{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
+                colored = colorize(line, any_pat) if tty else line.rstrip("\r\n")
+                sys.stdout.write(f"{prefix}: {colored}\n")
             sys.stdout.flush()
 
 
@@ -976,6 +1004,18 @@ def process_file(args):
 
         if maxc is not None:
             matches = matches[:maxc]
+        after = opts.get("after", 0)
+        before = opts.get("before", 0)
+        if after or before:
+            match_info = {ln: (cn, l) for ln, cn, l in matches}
+            seen = set()
+            expanded = []
+            for ln in sorted(match_info):
+                for i in range(max(1, ln - before), min(len(raw), ln + after) + 1):
+                    if i not in seen:
+                        seen.add(i)
+                        expanded.append((i, 0, raw[i - 1]) if i not in match_info else (i,) + match_info[i])
+            matches = expanded
         return (item, matches) if matches else None
     except Exception:
         return None
@@ -995,7 +1035,7 @@ def process_batch(batch_args):
 
 def run_stream(info, all_pats, any_pat, args, callback):
     tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
     stream, cleanup = open_zst_stream(str(info["path"]))
     try:
         with tarfile.open(fileobj=stream, mode="r|") as tf:
@@ -1021,7 +1061,7 @@ def run_stream(info, all_pats, any_pat, args, callback):
 
 
 def run_python(items, all_pats, any_pat, args, callback):
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
     jobs = args["jobs"]
     n = len(items)
     chunk_size = max(1, n // (jobs * 4))
@@ -1153,7 +1193,8 @@ def run(args):
 
     SUPPLEMENT_EXTS = ARCHIVE_EXTS + SPECIAL_EXTS
     use_ugrep = (args["ugrep"] and not args["stream"] and not args["name"]
-                  and not (args["file"] and not args["or"]) and not args["strip"])
+                  and not (args["file"] and not args["or"]) and not args["strip"]
+                  and not args["after"] and not args["before"])
 
     temp_roots = []
     try:

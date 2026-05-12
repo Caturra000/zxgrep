@@ -68,6 +68,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] --include '*.py' --exclude 'test_*'
   zxgrep INPUT WORD1 [WORD2 ...] -l
   zxgrep INPUT WORD1 [WORD2 ...] -m 5
+  zxgrep INPUT WORD1 [WORD2 ...] -C 2
   zxgrep INPUT WORD1 [WORD2 ...] -N
   zxgrep INPUT WORD1 [WORD2 ...] -j 8
   zxgrep INPUT WORD1 [WORD2 ...] --stream
@@ -206,11 +207,24 @@ def usage():
         zxgrep ./docs exec -m 3
         zxgrep ./docs exec task --file -m 5
 
-  18) Default output includes line and column numbers:
+  18) -A / -B / -C N:
+      Show N lines of context around each match.
+      -A N: show N lines after each match.
+      -B N: show N lines before each match.
+      -C N: show N lines before and after each match (equivalent to -A N -B N).
+      Context lines are displayed with column 0 (dimmed path), match lines
+      keep the usual highlighting. Overlapping windows from adjacent matches
+      are merged automatically.
+      Has no effect with -l or -N.
+      Example:
+        zxgrep ./docs exec -C 2
+        zxgrep ./docs exec -A 3 -B 1
+
+  19) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  19) Path coloring:
+  20) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -218,7 +232,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  20) -o / -O:
+  21) -o / -O:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -233,7 +247,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  21) --flat:
+  22) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -245,7 +259,7 @@ def usage():
 
 --- Performance ---
 
-  22) -j / --jobs:
+  23) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -253,7 +267,7 @@ def usage():
         zxgrep ./docs exec task -j 8
         zxgrep archive.tar.zst exec -j 4
 
-  23) --stream:
+  24) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -261,7 +275,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  24) --ugrep:
+  25) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -276,11 +290,11 @@ def usage():
 
 --- Commands ---
 
-   25) --install:
+   26) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-   26) --clean:
+   27) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
@@ -308,6 +322,7 @@ Examples:
   zxgrep ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   zxgrep ./docs exec task -l
   zxgrep ./docs exec task -m 5
+  zxgrep ./docs exec task -C 2
   zxgrep ./docs exec task -O --move
   zxgrep ./docs exec task -O --flat
   zxgrep ./docs report -N
