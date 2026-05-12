@@ -957,6 +957,20 @@ def extract_lines(path):
     return EXTRACTORS.get(Path(path).suffix.lower(), lambda _: None)(path)
 
 
+def strip_lines(raw):
+    in_guard = False
+    result = []
+    for l in raw:
+        if l.startswith('```'):
+            in_guard = not in_guard
+            result.append('')
+        elif in_guard:
+            result.append(l)
+        else:
+            result.append(strip_markup(l))
+    return result
+
+
 # Search worker
 
 def process_file(args):
@@ -981,7 +995,7 @@ def process_file(args):
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
                 raw = list(f)
             if do_strip:
-                raw = [strip_markup(l) for l in raw]
+                raw = strip_lines(raw)
         if raw is None:
             return None
 
