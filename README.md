@@ -65,6 +65,7 @@ def usage():
   zxgrep INPUT WORD1 [WORD2 ...] -r
   zxgrep INPUT WORD1 [WORD2 ...] -s
   zxgrep INPUT WORD1 [WORD2 ...] --or
+  zxgrep INPUT WORD1 [WORD2 ...] --ordered
   zxgrep INPUT WORD1 [WORD2 ...] --include '*.py' --exclude 'test_*'
   zxgrep INPUT WORD1 [WORD2 ...] -l
   zxgrep INPUT WORD1 [WORD2 ...] -m 5
@@ -173,9 +174,17 @@ def usage():
         zxgrep ./docs exec task        # AND: must contain both exec and task
         zxgrep ./docs exec task --or   # OR:  contains exec or task
 
+  14) --ordered:
+      Require keywords to appear in the specified order.
+      - Line mode: each keyword must be found after the previous one on the same line
+      - --file mode: each keyword must appear on a line at or after the previous keyword's line
+      Example:
+        zxgrep ./docs exec task --ordered        # line: "exec" before "task"
+        zxgrep ./docs exec task --ordered --file # file: "exec" before "task" across lines
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Filtering ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  14) --include GLOB:
+  15) --include GLOB:
       Only search files whose basename matches the specified glob pattern.
       Matching is based on the file basename (without directories).
       Can be specified multiple times to add multiple patterns (any match is accepted).
@@ -183,7 +192,7 @@ def usage():
         zxgrep ./docs exec --include '*.py'
         zxgrep ./docs exec --include '*.py' --include '*.js'
 
-  15) --exclude GLOB:
+  16) --exclude GLOB:
       Exclude files whose names match the specified glob pattern.
       Matches against basename and relative path (either match excludes).
       Can be specified multiple times to add multiple patterns.
@@ -193,12 +202,12 @@ def usage():
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Output ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  16) -l / --list-files:
+  17) -l / --list-files:
       Only list matched file paths, do not output matched lines.
       - In default mode: list files that have at least one line matching all keywords
       - In --file mode: list files that contain all keywords
 
-  17) -m / --max-count N:
+  18) -m / --max-count N:
       Stop after N matches per file.
       In line mode: output at most N matching lines per file.
       In --file mode: output at most N lines (among those containing any keyword).
@@ -207,7 +216,7 @@ def usage():
         zxgrep ./docs exec -m 3
         zxgrep ./docs exec task --file -m 5
 
-  18) -A / -B / -C N:
+  19) -A / -B / -C N:
       Show N lines of context around each match.
       -A N: show N lines after each match.
       -B N: show N lines before each match.
@@ -220,11 +229,11 @@ def usage():
         zxgrep ./docs exec -C 2
         zxgrep ./docs exec -A 3 -B 1
 
-  19) Default output includes line and column numbers:
+  20) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  20) Path coloring:
+  21) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -232,7 +241,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  21) -o OUTDIR / --outdir OUTDIR  /  -O / --auto-outdir:
+  22) -o OUTDIR / --outdir OUTDIR  /  -O / --auto-outdir:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -247,7 +256,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  22) --flat:
+  23) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -259,7 +268,7 @@ def usage():
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Performance ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  23) -j / --jobs:
+  24) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -267,7 +276,7 @@ def usage():
         zxgrep ./docs exec task -j 8
         zxgrep archive.tar.zst exec -j 4
 
-  24) --stream:
+  25) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -275,7 +284,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  25) --ugrep:
+  26) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -287,22 +296,23 @@ def usage():
         - --name-only mode
         - --file mode with AND logic (cross-line AND)
         - --strip mode
+        - --ordered mode
         - -A / -B / -C modes (context lines)
         - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Commands ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   26) --install:
+   27) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-   27) --clean:
+   28) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Exit Codes ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   28) Exit codes:
+   29) Exit codes:
        0  match found
        1  no match found
        2  error (invalid arguments, missing dependencies, etc.)
@@ -327,6 +337,8 @@ Examples:
   zxgrep ./docs 'exec.*task' --regex -s
   zxgrep ./docs exec task --or
   zxgrep ./docs exec task --or -l
+  zxgrep ./docs exec task --ordered
+  zxgrep ./docs exec task --ordered --file
   zxgrep ./docs exec --include '*.py'
   zxgrep ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   zxgrep ./docs exec task -l
