@@ -156,7 +156,7 @@ def usage():
   {PROGRAM} --print-bash-completion
   {PROGRAM} --clean
 
---- Input & File Formats ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Input & File Formats ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   1) INPUT is auto-detected as:
      - An archive (.tar.zst, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, .tar, .zip)
@@ -200,7 +200,7 @@ def usage():
        {PROGRAM} ./docs exec --strip
        {PROGRAM} archive.tar.zst exec --strip -x -s
 
---- Matching ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Matching ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   6) Default mode:
      Search by "line".
@@ -250,7 +250,7 @@ def usage():
         {PROGRAM} ./docs exec task        # AND: must contain both exec and task
         {PROGRAM} ./docs exec task --or   # OR:  contains exec or task
 
---- Filtering ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Filtering ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   14) --include GLOB:
       Only search files whose basename matches the specified glob pattern.
@@ -268,7 +268,7 @@ def usage():
         {PROGRAM} ./docs exec --exclude '*.log'
         {PROGRAM} ./docs exec --exclude 'node_modules' --exclude '*.min.js'
 
---- Output ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Output ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   16) -l / --list-files:
       Only list matched file paths, do not output matched lines.
@@ -309,7 +309,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  21) -o / -O:
+  21) -o OUTDIR / --outdir OUTDIR  /  -O / --auto-outdir:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -334,7 +334,7 @@ def usage():
         {PROGRAM} ./docs exec task -O --flat
         # Results in: zxgrep_exec+task/file1.txt, zxgrep_exec+task/file1.conflict-1.txt
 
---- Performance ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Performance ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   23) -j / --jobs:
       Specify number of parallel worker processes.
@@ -363,9 +363,11 @@ def usage():
         - --stream mode
         - --name-only mode
         - --file mode with AND logic (cross-line AND)
+        - --strip mode
+        - -A / -B / -C modes (context lines)
         - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
 
---- Commands ---
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Commands ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
    26) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
@@ -374,6 +376,13 @@ def usage():
    27) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Exit Codes ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   28) Exit codes:
+       0  match found
+       1  no match found
+       2  error (invalid arguments, missing dependencies, etc.)
 
 Examples:
   {PROGRAM} archive.tar.zst exec task
