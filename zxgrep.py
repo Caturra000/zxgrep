@@ -582,7 +582,7 @@ def parse(argv):
             else:
                 args[long] = True
             i += 1; continue
-        if not stop and arg.startswith("-"):
+        if not stop and arg.startswith("-") and arg != "-":
             die(f"Unsupported option: {arg}")
         if input_path is None:
             input_path = arg
@@ -597,6 +597,15 @@ def parse(argv):
         die(f"{conflict} cannot be used together with search arguments")
     if input_path is None:
         die("Missing INPUT")
+
+    if not sys.stdin.isatty() and input_path != "-":
+        try:
+            if not os.path.exists(input_path):
+                words.insert(0, input_path)
+                input_path = "-"
+        except OSError:
+            pass
+
     if not words:
         die("At least one keyword/expression is required")
     if any(w == "" for w in words):
@@ -646,7 +655,7 @@ def parse(argv):
 
     return {
         "action": "search",
-        "input": Path(os.path.abspath(os.path.expanduser(input_path))),
+        "input": "-" if input_path == "-" else Path(os.path.abspath(os.path.expanduser(input_path))),
         "words": words, "file": args["--file"], "outdir": outdir,
         "case": args["--case-sensitive"], "mode": mode, "or": args["--or"],
         "list": args["--list-files"], "name": args["--name-only"],
@@ -766,6 +775,8 @@ def pick_tmp_root():
 
 
 def detect(path):
+    if path == "-":
+        return {"kind": "stdin", "path": "-"}
     p = Path(os.path.abspath(os.path.expanduser(str(path))))
     if not p.exists():
         die(f"Input does not exist: {p}")
@@ -975,7 +986,12 @@ def column(line, pat):
 def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat, flat):
     if outdir:
         target = resolve_flat(outdir, item["rel"]) if flat else outdir / item["rel"]
-        safe_transfer(item["path"], target, do_move)
+        if item["path"] == "-":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                f.writelines(l for _, _, l in matches) if matches else None
+        else:
+            safe_transfer(item["path"], target, do_move)
         disp = display(target)
     else:
         disp = item["display"]
@@ -1109,22 +1125,26 @@ def process_file(args):
     combine = any if opts["or"] else all
 
     if opts["name"]:
-        nm = Path(item["rel"]).name
+        nm = Path(item["rel"]).name if path != "-" else "(stdin)"
         ok = seq_match(all_pats, nm) if opts.get("ordered") else combine(p.search(nm) for p in all_pats)
         if ok and opts.get("not"):
             ok = not any(n.search(nm) for n in opts["not"])
         return (item, []) if ok else None
 
-    is_special = Path(path).suffix.lower() in SPECIAL_EXTS
-    if not is_special and not is_probably_text(path):
+    is_special = path != "-" and Path(path).suffix.lower() in SPECIAL_EXTS
+    if not is_special and path != "-" and not is_probably_text(path):
         return None
 
-    do_strip = opts.get("strip") and is_markup_file(path)
+    do_strip = opts.get("strip") and (path == "-" or is_markup_file(path))
     maxc = opts.get("max_count")
     window = opts.get("window", 0)
 
     try:
-        if is_special:
+        if path == "-":
+            raw = list(sys.stdin)
+            if do_strip:
+                raw = strip_lines(raw)
+        elif is_special:
             raw = extract_lines(path)
         else:
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
@@ -1381,10 +1401,18 @@ def run(args):
         output(result[0], result[1], outdir, args["move"], args["color"], tty,
                args["list"], args["name"], any_pat, args["flat"])
 
-    if info["path"].name.endswith('.tar.zst') and args["stream"]:
+    if info["kind"] != "stdin" and info["path"].name.endswith('.tar.zst') and args["stream"]:
         run_stream(info, all_pats, any_pat, args, callback)
         if outdir and found:
             eprint(f"Matched files have been {'moved' if args['move'] else 'copied'} to: {display(outdir)}")
+        return found
+
+    if info["kind"] == "stdin":
+        opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "not": args["not"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+        callback(process_file(({"rel": "stdin.txt", "path": "-", "display": "(stdin)"},
+                               all_pats, any_pat, opts)))
+        if outdir and found:
+            eprint(f"Matched output has been written to: {display(outdir)}")
         return found
 
     SUPPLEMENT_EXTS = ARCHIVE_EXTS + SPECIAL_EXTS
@@ -1688,6 +1716,8 @@ def enable_ansi():
 
 def main(argv):
     sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     enable_ansi()
     args = parse(argv)
 
