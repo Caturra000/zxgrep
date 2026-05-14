@@ -79,8 +79,11 @@ _zxgrep() {
         case "${COMP_WORDS[i]}" in
             --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--ordered|--scope-exact|--scope-regex|--scope-case-sensitive|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
                 ;;
-            -o|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--scope|--not|-A|-B|-C)
+            -o|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--not|-A|-B|-C)
                 ((i++))
+                ;;
+            --scope)
+                ((i+=2))
                 ;;
             --)
                 input_seen=1
@@ -610,6 +613,8 @@ def parse(argv):
         die("At least one keyword/expression is required")
     if any(w == "" for w in words):
         die("Keyword/expression cannot be empty")
+    if any(w == "" for w in args["--not"]):
+        die("--not keyword/expression cannot be empty")
 
     for o in OPTIONS:
         long, _, _, _, _, conflicts = o
@@ -929,7 +934,7 @@ def seq_match(pats, s, pos=0):
     return True
 
 
-def window_match(raw, all_pats, window, ordered):
+def window_match(raw, all_pats, window, ordered, not_pats=None):
     line_hits = [{i for i, p in enumerate(all_pats) if p.search(l)} for l in raw]
     matched = set()
     end, need = len(raw), set(range(len(all_pats)))
@@ -941,10 +946,14 @@ def window_match(raw, all_pats, window, ordered):
                 if idx >= lim: break
                 idx += 1
             else:
+                if not_pats and any(any(n.search(raw[j]) for n in not_pats) for j in range(i, lim)):
+                    continue
                 matched.update(range(i, lim))
     else:
         for i in range(end):
             if set().union(*line_hits[i:i + window]) >= need:
+                if not_pats and any(any(n.search(raw[j]) for n in not_pats) for j in range(i, min(end, i + window))):
+                    continue
                 matched.update(range(i, min(end, i + window)))
     return matched
 
@@ -989,7 +998,7 @@ def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat
         if item["path"] == "-":
             target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
-                f.writelines(l for _, _, l in matches) if matches else None
+                f.writelines(item.get("raw", []))
         else:
             safe_transfer(item["path"], target, do_move)
         disp = display(target)
@@ -1142,6 +1151,7 @@ def process_file(args):
     try:
         if path == "-":
             raw = list(sys.stdin)
+            item["raw"] = raw
             if do_strip:
                 raw = strip_lines(raw)
         elif is_special:
@@ -1178,16 +1188,13 @@ def process_file(args):
             matches = [(ln, column(l, any_pat), l)
                        for ln, l in enumerate(raw, 1) if any_pat.search(l) and (scope_set is None or ln in scope_set)]
         elif window:
-            if opts.get("not") and any(any(n.search(l) for n in opts["not"])
-                                        for i, l in enumerate(raw, 1) if scope_set is None or i in scope_set):
-                return None
             if scope_set is not None:
                 idx_map = sorted(scope_set)
                 filtered = [raw[i - 1] for i in idx_map]
-                matched_lines = window_match(filtered, all_pats, window, opts.get("ordered"))
+                matched_lines = window_match(filtered, all_pats, window, opts.get("ordered"), opts.get("not"))
                 matched_lines = {idx_map[ln] - 1 for ln in matched_lines}
             else:
-                matched_lines = window_match(raw, all_pats, window, opts.get("ordered"))
+                matched_lines = window_match(raw, all_pats, window, opts.get("ordered"), opts.get("not"))
             matches = [(ln + 1, m.start() + 1, raw[ln]) for ln in sorted(matched_lines) if (m := any_pat.search(raw[ln]))]
             if not matches:
                 return None
