@@ -1014,7 +1014,7 @@ def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat
         col_w = max((len(str(cn)) for _, cn, _ in matches if cn != 0), default=1)
         for ln, cn, line in matches:
             if cn == 0:
-                prefix = f"{DIM}{disp}:{ln:0{ln_w}d}:{0:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{0:0{col_w}d}"
+                prefix = f"{DIM}{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
                 sys.stdout.write(f"{prefix}: {line.rstrip('\r\n')}\n")
             else:
                 prefix = f"{CYAN}{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
@@ -1242,9 +1242,16 @@ def process_batch(batch_args):
 
 # Search engines
 
+def make_opts(args):
+    return {"file": args["file"], "list": args["list"], "name": args["name"],
+            "or": args["or"], "ordered": args["ordered"], "window": args["window"],
+            "scope": args["scope"], "not": args["not"], "strip": args["strip"],
+            "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+
+
 def run_stream(info, all_pats, any_pat, args, callback):
     tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "not": args["not"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+    opts = make_opts(args)
     stream, cleanup = open_zst_stream(str(info["path"]))
     try:
         with tarfile.open(fileobj=stream, mode="r|") as tf:
@@ -1270,7 +1277,7 @@ def run_stream(info, all_pats, any_pat, args, callback):
 
 
 def run_python(items, all_pats, any_pat, args, callback):
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "not": args["not"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+    opts = make_opts(args)
     jobs = args["jobs"]
     n = len(items)
     chunk_size = max(1, n // (jobs * 4))
@@ -1415,7 +1422,7 @@ def run(args):
         return found
 
     if info["kind"] == "stdin":
-        opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "not": args["not"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+        opts = make_opts(args)
         callback(process_file(({"rel": "stdin.txt", "path": "-", "display": "(stdin)"},
                                all_pats, any_pat, opts)))
         if outdir and found:
@@ -1729,10 +1736,10 @@ def main(argv):
     args = parse(argv)
 
     actions = {
-        "help":             lambda: (usage(), 0)[1],
-        "install":          lambda: (install_self(), 0)[1],
-        "print-completion": lambda: (print(BASH_COMPLETION_SCRIPT, end=""), 0)[1],
-        "clean":            lambda: (clean(), 0)[1],
+        "help":             lambda: usage() or 0,
+        "install":          lambda: install_self() or 0,
+        "print-completion": lambda: print(BASH_COMPLETION_SCRIPT, end="") or 0,
+        "clean":            lambda: clean() or 0,
     }
     if args["action"] in actions:
         return actions[args["action"]]()
