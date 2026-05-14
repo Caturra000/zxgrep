@@ -486,7 +486,7 @@ OPTIONS = [
     ("--or",                    None, False, False, False,  ("--ordered",)),
     ("--ordered",               None, False, False, False,  ("--or",)),
     ("--window",                "-w", True,  False, None,   ("--file", "--or", "--name-only")),
-    ("--scope",                 None, False, False, None,   ("--name-only",)),
+    ("--scope",                 None, False, True,  [],    ("--name-only",)),
     ("--scope-exact",           None, False, False, False,  ("--scope-regex",)),
     ("--scope-regex",           None, False, False, False,  ("--scope-exact",)),
     ("--scope-case-sensitive",  None, False, False, False,  None),
@@ -567,7 +567,7 @@ def parse(argv):
             i += 1
             if i + 1 >= len(argv):
                 die("--scope requires two arguments: BEGIN END")
-            args["--scope"] = (argv[i], argv[i + 1]); i += 2; continue
+            args["--scope"].append((argv[i], argv[i + 1])); i += 2; continue
         if not stop and arg in OPT_BY_FLAG:
             opt = OPT_BY_FLAG[arg]
             long, _, takes_val, accum, _, _ = opt
@@ -1134,7 +1134,11 @@ def process_file(args):
         if raw is None:
             return None
 
-        scope_set = scope_lines(raw, *opts["scope"]) if opts.get("scope") else None
+        scope_set = None
+        if opts.get("scope"):
+            scope_set = scope_lines(raw, *opts["scope"][0])
+            for pair in opts["scope"][1:]:
+                scope_set &= scope_lines(raw, *pair)
 
         if opts["file"]:
             if opts.get("ordered"):
@@ -1348,18 +1352,18 @@ def run(args):
     all_pats = compile_all(args["words"], args["mode"], args["case"])
     any_pat = compile_any(args["words"], args["mode"], args["case"])
     neg_pats = [compile_one(w, args["mode"], args["case"]) for w in args["not"]]
-    scope_pats = None
+    scope_pats = []
     if args["scope"]:
-        if not args["scope"][0] or not args["scope"][1]:
-            die("--scope arguments cannot be empty")
-        s, e = args["scope"]
         scope_mode = "regex" if args["scope-regex"] else "exact" if args["scope-exact"] else "substr"
         scope_case = args["scope-case"]
-        if scope_mode == "regex":
-            s, e = s.replace(r'\n', '\n').replace(r'\t', '\t'), e.replace(r'\n', '\n').replace(r'\t', '\t')
-        scope_pats = (compile_one(s, scope_mode, scope_case),
-                      compile_one(e, scope_mode, scope_case))
-    args["scope"] = scope_pats
+        for s, e in args["scope"]:
+            if not s or not e:
+                die("--scope arguments cannot be empty")
+            if scope_mode == "regex":
+                s, e = s.replace(r'\n', '\n').replace(r'\t', '\t'), e.replace(r'\n', '\n').replace(r'\t', '\t')
+            scope_pats.append((compile_one(s, scope_mode, scope_case),
+                               compile_one(e, scope_mode, scope_case)))
+    args["scope"] = scope_pats or None
     args["not"] = neg_pats
     outdir = args["outdir"]
     tty = sys.stdout.isatty()
