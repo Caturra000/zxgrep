@@ -50,7 +50,7 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --ordered --window --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip --max-count -h -s -x -r -l -N -o -O -j -w -m --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip --max-count -h -s -x -r -l -N -o -O -j -w -m --jobs"
 
     if [[ "$prev" == "-o" ]]; then
         compopt -o filenames 2>/dev/null
@@ -77,9 +77,9 @@ _zxgrep() {
     i=1
     while (( i < COMP_CWORD )); do
         case "${COMP_WORDS[i]}" in
-            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--ordered|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
+            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--ordered|--scope-exact|--scope-regex|--scope-case-sensitive|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
                 ;;
-            -o|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|-A|-B|-C)
+            -o|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--scope|-A|-B|-C)
                 ((i++))
                 ;;
             --)
@@ -112,7 +112,7 @@ complete -F _zxgrep zxgrep
 
 ZSH_COMPLETION_SCRIPT = r'''#compdef zxgrep
 _zxgrep() {
-    local opts=(--help -h --install --print-bash-completion --clean --file --case-sensitive -s --exact -x --regex -r --or --ordered --window --include --exclude --copy --move --list-files -l --name-only -N --color-path --no-color-path --stream --flat --ugrep -o -O -j -w --jobs)
+    local opts=(--help -h --install --print-bash-completion --clean --file --case-sensitive -s --exact -x --regex -r --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --include --exclude --copy --move --list-files -l --name-only -N --color-path --no-color-path --stream --flat --ugrep -o -O -j -w --jobs)
     if [[ $words[CURRENT] == -* ]]; then
         compadd -- "${opts[@]}"
         return
@@ -144,6 +144,7 @@ def usage():
   {PROGRAM} INPUT WORD1 [WORD2 ...] --or
   {PROGRAM} INPUT WORD1 [WORD2 ...] --ordered
   {PROGRAM} INPUT WORD1 [WORD2 ...] -w 3
+  {PROGRAM} INPUT WORD1 [WORD2 ...] --scope '```cpp' '```'
   {PROGRAM} INPUT WORD1 [WORD2 ...] --include '*.py' --exclude 'test_*'
   {PROGRAM} INPUT WORD1 [WORD2 ...] -l
   {PROGRAM} INPUT WORD1 [WORD2 ...] -m 5
@@ -269,9 +270,19 @@ def usage():
         {PROGRAM} ./docs exec task -w 3
         {PROGRAM} ./docs exec task -w 3 --ordered
 
+  16) --scope BEGIN END:
+      Restrict search to lines between BEGIN and END delimiters.
+      Only lines inside the delimited regions are searched; others are ignored.
+      Delimiter matching mode defaults to substring; use --scope-exact,
+      --scope-regex, or --scope-case-sensitive to change it independently.
+      Cannot be used with --name-only.
+      Example:
+        {PROGRAM} ./docs exec task --scope '```cpp' '```'
+        {PROGRAM} ./docs exec task --scope '<pre>' '</pre>' --scope-exact
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Filtering ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  16) --include GLOB:
+  17) --include GLOB:
       Only search files whose basename matches the specified glob pattern.
       Matching is based on the file basename (without directories).
       Can be specified multiple times to add multiple patterns (any match is accepted).
@@ -279,7 +290,7 @@ def usage():
         {PROGRAM} ./docs exec --include '*.py'
         {PROGRAM} ./docs exec --include '*.py' --include '*.js'
 
-  17) --exclude GLOB:
+  18) --exclude GLOB:
       Exclude files whose names match the specified glob pattern.
       Matches against basename and relative path (either match excludes).
       Can be specified multiple times to add multiple patterns.
@@ -289,12 +300,12 @@ def usage():
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Output ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  18) -l / --list-files:
+  19) -l / --list-files:
       Only list matched file paths, do not output matched lines.
       - In default mode: list files that have at least one line matching all keywords
       - In --file mode: list files that contain all keywords
 
-  19) -m / --max-count N:
+  20) -m / --max-count N:
       Stop after N matches per file.
       In line mode: output at most N matching lines per file.
       In --file mode: output at most N lines (among those containing any keyword).
@@ -303,7 +314,7 @@ def usage():
         {PROGRAM} ./docs exec -m 3
         {PROGRAM} ./docs exec task --file -m 5
 
-  20) -A / -B / -C N:
+  21) -A / -B / -C N:
       Show N lines of context around each match.
       -A N: show N lines after each match.
       -B N: show N lines before each match.
@@ -316,11 +327,11 @@ def usage():
         {PROGRAM} ./docs exec -C 2
         {PROGRAM} ./docs exec -A 3 -B 1
 
-  21) Default output includes line and column numbers:
+  22) Default output includes line and column numbers:
       Like:
         path/to/file.txt:12:8: matched line
 
-  22) Path coloring:
+  23) Path coloring:
       Paths are colored by default.
       To avoid affecting VSCode's path:line:col recognition, you may disable path coloring.
       Disable:
@@ -328,7 +339,7 @@ def usage():
       Explicitly enable (default behavior):
         --color-path
 
-  23) -o OUTDIR / --outdir OUTDIR  /  -O / --auto-outdir:
+  24) -o OUTDIR / --outdir OUTDIR  /  -O / --auto-outdir:
       Output matched files into a target directory (does not change matching behavior).
       Default behavior is "copy".
       To switch to move, add:
@@ -343,7 +354,7 @@ def usage():
       - For a directory: preserve paths relative to the input directory
       - For a single file: output as same filename under the target directory
 
-  24) --flat:
+  25) --flat:
       Flatten output directory structure (only effective with -o or -O).
       Instead of preserving the original directory hierarchy, all matched files
       are placed directly in the target directory (single level).
@@ -355,7 +366,7 @@ def usage():
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Performance ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  25) -j / --jobs:
+  26) -j / --jobs:
       Specify number of parallel worker processes.
       Default uses CPU core count.
       Search uses multi-process parallelism; output is streamed in real time (order not guaranteed).
@@ -363,7 +374,7 @@ def usage():
         {PROGRAM} ./docs exec task -j 8
         {PROGRAM} archive.tar.zst exec -j 4
 
-  26) --stream:
+  27) --stream:
       Stream processing for .tar.zst archives only.
       Instead of extracting the entire archive to a temporary directory,
       process files one by one directly from the tar stream.
@@ -371,7 +382,7 @@ def usage():
       For other archive formats, directories, or single files, this flag has no effect.
       Note: -j/--jobs is ignored in stream mode (processing is sequential).
 
-  27) --ugrep:
+  28) --ugrep:
       Delegate text search to the 'ugrep' command for significantly better performance.
       Requires 'ugrep' to be installed:
         Linux:   sudo apt install ugrep
@@ -385,22 +396,23 @@ def usage():
         - --strip mode
         - --ordered mode
         - --window mode
+        - --scope mode
         - -A / -B / -C modes (context lines)
         - PDF / EPUB / MOBI / AZW3 files (handled by Python, then merged)
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Commands ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   28) --install:
+   29) --install:
       Install to /usr/local/bin/zxgrep and bash completion (Unix).
       On Windows, creates zxgrep.cmd launcher and adds to user PATH.
 
-   29) --clean:
+   30) --clean:
       Clean up all auto-generated output directories in the current directory (prefixed with zxgrep_).
       You will be prompted for confirmation before deletion.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Exit Codes ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   30) Exit codes:
+   31) Exit codes:
        0  match found
        1  no match found
        2  error (invalid arguments, missing dependencies, etc.)
@@ -429,6 +441,8 @@ Examples:
   {PROGRAM} ./docs exec task --ordered --file
   {PROGRAM} ./docs exec task -w 3
   {PROGRAM} ./docs exec task -w 3 --ordered
+  {PROGRAM} ./docs exec task --scope '```cpp' '```'
+  {PROGRAM} ./docs exec task --scope '<pre>' '</pre>' --scope-exact
   {PROGRAM} ./docs exec --include '*.py'
   {PROGRAM} ./docs exec --include '*.py' --include '*.js' --exclude 'test_*'
   {PROGRAM} ./docs exec task -l
@@ -461,6 +475,10 @@ OPTIONS = [
     ("--or",                    None, False, False, False,  ("--ordered",)),
     ("--ordered",               None, False, False, False,  ("--or",)),
     ("--window",                "-w", True,  False, None,   ("--file", "--or", "--name-only")),
+    ("--scope",                 None, False, False, None,   ("--name-only",)),
+    ("--scope-exact",           None, False, False, False,  ("--scope-regex",)),
+    ("--scope-regex",           None, False, False, False,  ("--scope-exact",)),
+    ("--scope-case-sensitive",  None, False, False, False,  None),
     ("--include",               None, True,  True,  [],     None),
     ("--exclude",               None, True,  True,  [],     None),
     ("--list-files",            "-l", False, False, False,  None),
@@ -533,6 +551,11 @@ def parse(argv):
         arg = argv[i]
         if arg == "--":
             stop = True; i += 1; continue
+        if not stop and arg == "--scope":
+            i += 1
+            if i + 1 >= len(argv):
+                die("--scope requires two arguments: BEGIN END")
+            args["--scope"] = (argv[i], argv[i + 1]); i += 2; continue
         if not stop and arg in OPT_BY_FLAG:
             opt = OPT_BY_FLAG[arg]
             long, _, takes_val, accum, _, _ = opt
@@ -621,6 +644,10 @@ def parse(argv):
         "strip": args["--strip"], "max_count": max_count,
         "ordered": args["--ordered"],
         "window": window,
+        "scope": args["--scope"],
+        "scope-exact": args["--scope-exact"],
+        "scope-regex": args["--scope-regex"],
+        "scope-case": args["--scope-case-sensitive"],
         "after": after, "before": before,
     }
 
@@ -898,6 +925,28 @@ def window_match(raw, all_pats, window, ordered):
     return matched
 
 
+def scope_lines(raw, start_pat, end_pat):
+    lines = set()
+    inside = False
+    toggle = start_pat.pattern == end_pat.pattern
+    for i, l in enumerate(raw, 1):
+        if toggle:
+            if start_pat.search(l):
+                inside = not inside
+            if inside:
+                lines.add(i)
+        elif inside:
+            if end_pat.search(l):
+                inside = False
+                if start_pat.search(l):
+                    inside = True; lines.add(i)
+            else:
+                lines.add(i)
+        elif start_pat.search(l):
+            inside = True; lines.add(i)
+    return lines
+
+
 # Output helpers
 
 def colorize(line, pat):
@@ -1070,21 +1119,30 @@ def process_file(args):
         if raw is None:
             return None
 
+        scope_set = scope_lines(raw, *opts["scope"]) if opts.get("scope") else None
+
         if opts["file"]:
             if opts.get("ordered"):
-                it = iter(raw)
+                it = (l for i, l in enumerate(raw, 1) if scope_set is None or i in scope_set)
                 if not all(any(p.search(l) for l in it) for p in all_pats):
                     return None
             else:
-                found = {i for l in raw for i, p in enumerate(all_pats) if p.search(l)}
+                found = {i for idx, l in enumerate(raw) for i, p in enumerate(all_pats)
+                          if p.search(l) and (scope_set is None or (idx + 1) in scope_set)}
                 if not (found if opts["or"] else found >= set(range(len(all_pats)))):
                     return None
             if opts["list"]:
                 return (item, [])
             matches = [(ln, column(l, any_pat), l)
-                       for ln, l in enumerate(raw, 1) if any_pat.search(l)]
+                       for ln, l in enumerate(raw, 1) if any_pat.search(l) and (scope_set is None or ln in scope_set)]
         elif window:
-            matched_lines = window_match(raw, all_pats, window, opts.get("ordered"))
+            if scope_set is not None:
+                idx_map = sorted(scope_set)
+                filtered = [raw[i - 1] for i in idx_map]
+                matched_lines = window_match(filtered, all_pats, window, opts.get("ordered"))
+                matched_lines = {idx_map[ln] - 1 for ln in matched_lines}
+            else:
+                matched_lines = window_match(raw, all_pats, window, opts.get("ordered"))
             matches = [(ln + 1, m.start() + 1, raw[ln]) for ln in sorted(matched_lines) if (m := any_pat.search(raw[ln]))]
             if not matches:
                 return None
@@ -1092,7 +1150,8 @@ def process_file(args):
                 return (item, [])
         else:
             matched = [(ln, l) for ln, l in enumerate(raw, 1)
-                       if (seq_match(all_pats, l) if opts.get("ordered") else combine(p.search(l) for p in all_pats))]
+                       if (scope_set is None or ln in scope_set) and
+                       (seq_match(all_pats, l) if opts.get("ordered") else combine(p.search(l) for p in all_pats))]
             if not matched:
                 return None
             if opts["list"]:
@@ -1132,7 +1191,7 @@ def process_batch(batch_args):
 
 def run_stream(info, all_pats, any_pat, args, callback):
     tmp = Path(tempfile.mkdtemp(prefix="zxgrep_stream."))
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
     stream, cleanup = open_zst_stream(str(info["path"]))
     try:
         with tarfile.open(fileobj=stream, mode="r|") as tf:
@@ -1158,7 +1217,7 @@ def run_stream(info, all_pats, any_pat, args, callback):
 
 
 def run_python(items, all_pats, any_pat, args, callback):
-    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
+    opts = {"file": args["file"], "list": args["list"], "name": args["name"], "or": args["or"], "ordered": args["ordered"], "window": args["window"], "scope": args["scope"], "strip": args["strip"], "max_count": args["max_count"], "after": args["after"], "before": args["before"]}
     jobs = args["jobs"]
     n = len(items)
     chunk_size = max(1, n // (jobs * 4))
@@ -1266,6 +1325,18 @@ def run(args):
     info = detect(args["input"])
     all_pats = compile_all(args["words"], args["mode"], args["case"])
     any_pat = compile_any(args["words"], args["mode"], args["case"])
+    scope_pats = None
+    if args["scope"]:
+        if not args["scope"][0] or not args["scope"][1]:
+            die("--scope arguments cannot be empty")
+        s, e = args["scope"]
+        scope_mode = "regex" if args["scope-regex"] else "exact" if args["scope-exact"] else "substr"
+        scope_case = args["scope-case"]
+        if scope_mode == "regex":
+            s, e = s.replace(r'\n', '\n').replace(r'\t', '\t'), e.replace(r'\n', '\n').replace(r'\t', '\t')
+        scope_pats = (compile_one(s, scope_mode, scope_case),
+                      compile_one(e, scope_mode, scope_case))
+    args["scope"] = scope_pats
     outdir = args["outdir"]
     tty = sys.stdout.isatty()
 
@@ -1292,6 +1363,7 @@ def run(args):
     use_ugrep = (args["ugrep"] and not args["stream"] and not args["name"]
                   and not (args["file"] and not args["or"]) and not args["strip"]
                   and not args["ordered"] and not args["window"]
+                  and not args["scope"]
                   and not args["after"] and not args["before"])
 
     temp_roots = []
