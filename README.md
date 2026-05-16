@@ -31,10 +31,11 @@ You want to *grep*:
 - A directory of **Markdown** notes.
 - Find "todo" inside fenced `python` **code blocks** only.
 - **Skip** any todo that mentions "fixed" (already done).
+- **Pick** the matched files out.
 
 ```bash
 # zxgrep in one go!
-zxgrep ./notes todo --include '*.md' --scope '```python' '```' --not fixed
+zxgrep ./notes todo --include '*.md' --scope '```python' '```' --not fixed -O --move
 ```
 
 ### Example with real-world archives
@@ -54,6 +55,8 @@ You want to *grep*:
 # zxgrep in one go!
 zxgrep archive.tar.zst bob your uncle --strip --exact --ordered --window 5 -C 3
 ```
+
+![](/example.png)
 
 ### More
 
