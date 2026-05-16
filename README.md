@@ -25,7 +25,39 @@ zxgrep /tmp/test.tar.zst awesome xg
 test1.txt:1:2: z<mark>**xg**</mark>rep is <mark>**awesome**</mark>  
 test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
 
-> See the [Manual](#manual) for more usage details.
+### Example with real-world Markdown
+
+You want to *grep*:
+- A directory of **Markdown** notes.
+- Find "todo" inside fenced `python` **code blocks** only.
+- **Skip** any todo that mentions "fixed" (already done).
+
+```bash
+# zxgrep in one go!
+zxgrep ./notes todo --include '*.md' --scope '```python' '```' --not fixed
+```
+
+### Example with real-world archives
+
+You want to *grep*:
+- 10000+ text files inside a .tar.zst archive. (For example, [wg21](https://wg21.link/index.html) papers.)
+- Text file types can be .txt, .pdf and .html.
+- Exact match only for accuracy.
+- **Multiple** keywords are needed.
+- Multiple keywords should be treated as an **AND** relationship.
+- Multiple keywords must be matched in the specified **order**.
+- You can't grep line by line. **Hard line breaks** from PDF/HTML-to-text split sentences apart.
+- You can't grep file by file. It is far too coarse-grained and noisy.
+- You want to know the **context**, not only the result.
+
+```bash
+# zxgrep in one go!
+zxgrep archive.tar.zst bob your uncle --strip --exact --ordered --window 5 -C 3
+```
+
+### More
+
+> See the [manual](#manual) for more usage details.
 
 ## Platforms
 
