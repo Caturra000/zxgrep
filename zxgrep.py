@@ -940,12 +940,8 @@ def window_match(raw, all_pats, window, ordered, not_pats=None):
     end, need = len(raw), set(range(len(all_pats)))
     if ordered:
         for i in range(end):
-            idx, lim = i, min(end, i + window)
-            for pi in range(len(all_pats)):
-                while idx < lim and pi not in line_hits[idx]: idx += 1
-                if idx >= lim: break
-                idx += 1
-            else:
+            lim = min(end, i + window)
+            if seq_match(all_pats, "".join(raw[i:lim])):
                 if not_pats and any(any(n.search(raw[j]) for n in not_pats) for j in range(i, lim)):
                     continue
                 matched.update(range(i, lim))
