@@ -40,7 +40,7 @@ def is_archive(path):
 
 BASH_COMPLETION_SCRIPT = r'''# bash completion for zxgrep
 _zxgrep() {
-    local cur prev i input_seen
+    local cur prev i sep_seen
     COMPREPLY=()
 
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -50,56 +50,45 @@ _zxgrep() {
         prev=""
     fi
 
-    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --not --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip --max-count -h -s -x -r -l -N -o -O -j -w -m --jobs"
+    local opts="--help --install --print-bash-completion --clean --file --case-sensitive --exact --regex --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --not --include --exclude --copy --move --list-files --name-only --color-path --no-color-path --stream --flat --ugrep --strip --max-count --outdir -h -s -x -r -l -N -o -O -j -w -m --jobs"
 
-    if [[ "$prev" == "-o" ]]; then
+    if [[ "$prev" == "-o" || "$prev" == "--outdir" ]]; then
         compopt -o filenames 2>/dev/null
         mapfile -t COMPREPLY < <(compgen -d -- "$cur")
         return 0
     fi
 
-    if [[ "$prev" == "-j" || "$prev" == "--jobs" ]]; then
-        COMPREPLY=()
-        return 0
-    fi
+    case "$prev" in
+        -j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--not|-A|-B|-C)
+            COMPREPLY=()
+            return 0
+            ;;
+    esac
 
-    if [[ "$prev" == "--include" || "$prev" == "--exclude" ]]; then
-        COMPREPLY=()
-        return 0
-    fi
-
-    if [[ "$cur" == -* ]]; then
-        mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
-        return 0
-    fi
-
-    input_seen=0
+    sep_seen=0
     i=1
     while (( i < COMP_CWORD )); do
         case "${COMP_WORDS[i]}" in
-            --help|-h|--install|--print-bash-completion|--clean|--file|--case-sensitive|-s|--exact|-x|--regex|-r|--or|--ordered|--scope-exact|--scope-regex|--scope-case-sensitive|--copy|--move|--list-files|-l|--name-only|-N|--color-path|--no-color-path|--stream|--flat|--ugrep|--strip|-O)
+            --)
+                sep_seen=1
+                break
                 ;;
-            -o|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--not|-A|-B|-C)
+            -o|--outdir|-j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--not|-A|-B|-C)
                 ((i++))
                 ;;
             --scope)
                 ((i+=2))
                 ;;
-            --)
-                input_seen=1
-                break
-                ;;
-            -*)
-                ;;
-            *)
-                input_seen=1
-                break
-                ;;
         esac
         ((i++))
     done
 
-    if (( input_seen == 0 )); then
+    if [[ "$cur" == -* ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "$opts --" -- "$cur")
+        return 0
+    fi
+
+    if (( sep_seen == 0 )); then
         compopt -o filenames 2>/dev/null
         mapfile -t COMPREPLY < <(compgen -f -- "$cur")
         return 0
@@ -115,12 +104,36 @@ complete -F _zxgrep zxgrep
 
 ZSH_COMPLETION_SCRIPT = r'''#compdef zxgrep
 _zxgrep() {
-    local opts=(--help -h --install --print-bash-completion --clean --file --case-sensitive -s --exact -x --regex -r --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --not --include --exclude --copy --move --list-files -l --name-only -N --color-path --no-color-path --stream --flat --ugrep -o -O -j -w --jobs)
+    local opts=(--help -h --install --print-bash-completion --clean --file --case-sensitive -s --exact -x --regex -r --or --ordered --window --scope --scope-exact --scope-regex --scope-case-sensitive --not --include --exclude --copy --move --list-files -l --name-only -N --color-path --no-color-path --stream --flat --ugrep -o --outdir -O -j -w --jobs --)
+
+    if [[ $words[CURRENT-1] == "-o" || $words[CURRENT-1] == "--outdir" ]]; then
+        _directories
+        return
+    fi
+
+    case $words[CURRENT-1] in
+        -j|--jobs|--include|--exclude|-m|--max-count|-w|--window|--not|-A|-B|-C)
+            return
+            ;;
+    esac
+
     if [[ $words[CURRENT] == -* ]]; then
         compadd -- "${opts[@]}"
         return
     fi
-    _files
+
+    local i=2 sep_seen=0
+    while (( i < CURRENT )); do
+        if [[ ${words[i]} == "--" ]]; then
+            sep_seen=1
+            break
+        fi
+        ((i++))
+    done
+
+    if (( sep_seen == 0 )); then
+        _files
+    fi
 }
 _zxgrep "$@"
 '''
@@ -560,18 +573,18 @@ def parse(argv):
         long, _, _, accum, default, _ = o
         args[long] = list(default) if accum else default
 
-    words, input_path, stop = [], None, False
+    words, inputs, seen_sep = [], [], False
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--":
-            stop = True; i += 1; continue
-        if not stop and arg == "--scope":
+            seen_sep = True; i += 1; continue
+        if arg == "--scope":
             i += 1
             if i + 1 >= len(argv):
                 die("--scope requires two arguments: BEGIN END")
             args["--scope"].append((argv[i], argv[i + 1])); i += 2; continue
-        if not stop and arg in OPT_BY_FLAG:
+        if arg in OPT_BY_FLAG:
             opt = OPT_BY_FLAG[arg]
             long, _, takes_val, accum, _, _ = opt
             if takes_val:
@@ -585,12 +598,12 @@ def parse(argv):
             else:
                 args[long] = True
             i += 1; continue
-        if not stop and arg.startswith("-") and arg != "-":
+        if arg.startswith("-") and arg != "-":
             die(f"Unsupported option: {arg}")
-        if input_path is None:
-            input_path = arg
-        else:
+        if seen_sep:
             words.append(arg)
+        else:
+            inputs.append(arg)
         i += 1
 
     if args["--help"]:
@@ -598,14 +611,19 @@ def parse(argv):
     conflict = next((f for f in ACTION_FLAGS if args[f]), None)
     if conflict:
         die(f"{conflict} cannot be used together with search arguments")
-    if input_path is None:
+
+    if not seen_sep and inputs:
+        words = inputs[1:] + words
+        inputs = [inputs[0]]
+
+    if not inputs:
         die("Missing INPUT")
 
-    if not sys.stdin.isatty() and input_path != "-":
+    if not seen_sep and not sys.stdin.isatty() and inputs[0] != "-":
         try:
-            if not os.path.exists(input_path):
-                words.insert(0, input_path)
-                input_path = "-"
+            if not os.path.exists(inputs[0]):
+                words.insert(0, inputs[0])
+                inputs[0] = "-"
         except OSError:
             pass
 
@@ -660,7 +678,7 @@ def parse(argv):
 
     return {
         "action": "search",
-        "input": "-" if input_path == "-" else Path(os.path.abspath(os.path.expanduser(input_path))),
+        "inputs": ["-" if p == "-" else Path(os.path.abspath(os.path.expanduser(p))) for p in inputs],
         "words": words, "file": args["--file"], "outdir": outdir,
         "case": args["--case-sensitive"], "mode": mode, "or": args["--or"],
         "list": args["--list-files"], "name": args["--name-only"],
@@ -1740,7 +1758,7 @@ def main(argv):
     if args["action"] in actions:
         return actions[args["action"]]()
 
-    return 0 if run(args) else 1
+    return 0 if any([run({**args, "input": inp}) for inp in args["inputs"]]) else 1
 
 
 if __name__ == "__main__":
