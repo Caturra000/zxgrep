@@ -20,8 +20,6 @@ tar -I zstd -cf /tmp/test.tar.zst -C /tmp test1.txt test2.txt
 zxgrep /tmp/test.tar.zst awesome xg
 ```
 
-### Output
-
 test1.txt:1:2: z<mark>**xg**</mark>rep is <mark>**awesome**</mark>  
 test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
 
@@ -29,13 +27,14 @@ test2.txt:3:1: <mark>**awesome**</mark> z<mark>**xg**</mark>rep
 
 You want to *grep*:
 - A directory of **Markdown** notes.
-- Find "todo" inside fenced `python` **code blocks** only.
-- **Skip** any todo that mentions "fixed" (already done).
-- **Pick** the matched files out.
+- **Scope** the search for "TODO" to fenced `python` code blocks.
+- **Skip** any TODO that mentions "FIXED".
+- **Move** the matched files **out** to an output directory.
+- And finally, **flatten** the output hierarchy.
 
 ```bash
 # zxgrep in one go!
-zxgrep ./notes todo --include '*.md' --scope '```python' '```' --not fixed -O --move
+zxgrep ./notes TODO --include '*.md' --scope '```python' '```' --not FIXED -O --move --flat
 ```
 
 ### Example with real-world archives
@@ -60,7 +59,7 @@ zxgrep archive.tar.zst bob your uncle --strip --exact --ordered --window 5 -C 3
 
 ### More
 
-> See the [manual](#manual) for more usage details.
+See the [manual](#manual) for more usage details.
 
 ## Platforms
 
