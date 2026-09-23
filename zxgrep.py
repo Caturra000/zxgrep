@@ -502,7 +502,7 @@ OPTIONS = [
     ("--or",                    None, False, False, False,  ("--ordered",)),
     ("--ordered",               None, False, False, False,  ("--or",)),
     ("--window",                "-w", True,  False, None,   ("--file", "--or", "--name-only")),
-    ("--scope",                 None, False, True,  [],    ("--name-only",)),
+    ("--scope",                 None, False, True,  [],     ("--name-only",)),
     ("--scope-exact",           None, False, False, False,  ("--scope-regex",)),
     ("--scope-regex",           None, False, False, False,  ("--scope-exact",)),
     ("--scope-case-sensitive",  None, False, False, False,  None),
@@ -944,66 +944,110 @@ def compile_any(words, mode, case):
         die(f"Highlight regex compilation failed: {ex}")
 
 
-def seq_match(pats, s, pos=0):
+# Scope
+
+def carve(text, begin, end):
+    out, pos, n = [], 0, len(text)
+    while (b := begin.search(text, pos)) is not None:
+        e = end.search(text, max(b.end(), b.start() + 1))
+        out.append((b.end(), e.start() if e else n))
+        pos = max(e.end(), b.end() + 1) if e else n + 1
+    return out
+
+
+def intersect(a, b):
+    out, i, j = [], 0, 0
+    while i < len(a) and j < len(b):
+        s, e = max(a[i][0], b[j][0]), min(a[i][1], b[j][1])
+        if s < e:
+            out.append((s, e))
+        i, j = (i + 1, j) if a[i][1] < b[j][1] else (i, j + 1)
+    return out
+
+
+def line_spans(raw, pairs):
+    if not pairs:
+        return [None] * len(raw)
+    text = "".join(raw)
+    regs = carve(text, *pairs[0])
+    for pair in pairs[1:]:
+        regs = intersect(regs, carve(text, *pair))
+    out, pos, i = [], 0, 0
+    for l in raw:
+        stop = pos + len(l.rstrip("\r\n"))
+        while i < len(regs) and regs[i][1] <= pos:
+            i += 1
+        cur, j = [], i
+        while j < len(regs) and regs[j][0] < stop:
+            s, e = max(regs[j][0], pos), min(regs[j][1], stop)
+            if s < e:
+                cur.append((s - pos, e - pos))
+            j += 1
+        out.append(cur)
+        pos += len(l)
+    return out
+
+
+# Span aware matching
+
+def find_in(pat, line, spans, pos=0):
+    for s, e in ((0, len(line)),) if spans is None else spans:
+        if e > pos and (m := pat.search(line, max(s, pos), e)):
+            return m
+    return None
+
+
+def all_in(pats, line, spans, ordered, combine):
+    if not ordered:
+        return combine(find_in(p, line, spans) is not None for p in pats)
+    pos = 0
     for p in pats:
-        m = p.search(s, pos)
-        if not m: return False
+        if not (m := find_in(p, line, spans, pos)):
+            return False
         pos = m.end()
     return True
 
 
-def window_match(raw, all_pats, window, ordered, not_pats=None):
-    line_hits = [{i for i, p in enumerate(all_pats) if p.search(l)} for l in raw]
-    matched = set()
-    end, need = len(raw), set(range(len(all_pats)))
-    if ordered:
-        for i in range(end):
-            lim = min(end, i + window)
-            if seq_match(all_pats, "".join(raw[i:lim])):
-                if not_pats and any(any(n.search(raw[j]) for n in not_pats) for j in range(i, lim)):
-                    continue
-                matched.update(range(i, lim))
-    else:
-        for i in range(end):
-            if set().union(*line_hits[i:i + window]) >= need:
-                if not_pats and any(any(n.search(raw[j]) for n in not_pats) for j in range(i, min(end, i + window))):
-                    continue
-                matched.update(range(i, min(end, i + window)))
+def seq_across(pats, lines, spans, lo, hi):
+    i, pos = lo, 0
+    for p in pats:
+        while i < hi and not (m := find_in(p, lines[i], spans[i], pos)):
+            i, pos = i + 1, 0
+        if i >= hi:
+            return False
+        pos = m.end()
+    return True
+
+
+def window_match(lines, spans, pats, size, ordered, nots):
+    live = [sp is None or bool(sp) for sp in spans]
+    hits = None if ordered else [{k for k, p in enumerate(pats) if find_in(p, l, sp)}
+                                 for l, sp in zip(lines, spans)]
+    need, end, matched = set(range(len(pats))), len(lines), set()
+    for i in range(end):
+        lim = i
+        while lim < min(end, i + size) and live[lim]:
+            lim += 1
+        if lim == i:
+            continue
+        rng = range(i, lim)
+        if any(find_in(x, lines[j], spans[j]) for j in rng for x in nots):
+            continue
+        if seq_across(pats, lines, spans, i, lim) if ordered else set().union(*hits[i:lim]) >= need:
+            matched.update(rng)
     return matched
-
-
-def scope_lines(raw, start_pat, end_pat):
-    lines = set()
-    inside = False
-    toggle = start_pat.pattern == end_pat.pattern
-    for i, l in enumerate(raw, 1):
-        if toggle:
-            if start_pat.search(l):
-                inside = not inside
-            if inside:
-                lines.add(i)
-        elif inside:
-            if end_pat.search(l):
-                inside = False
-                if start_pat.search(l):
-                    inside = True; lines.add(i)
-            else:
-                lines.add(i)
-        elif start_pat.search(l):
-            inside = True; lines.add(i)
-    return lines
 
 
 # Output helpers
 
-def colorize(line, pat):
-    return pat.sub(lambda m: f"{RED}{m.group(0)}{RESET}", line.rstrip("\r\n"))
-
-
-def column(line, pat):
-    m = pat.search(line)
-    return (m.start() + 1) if m else 1
-
+def colorize(line, pat, spans):
+    t = line.rstrip("\r\n")
+    out, last = [], 0
+    for s, e in ((0, len(t)),) if spans is None else spans:
+        for m in pat.finditer(t, max(s, last), e):
+            out.append(t[last:m.start()] + RED + m.group(0) + RESET)
+            last = m.end()
+    return "".join(out) + t[last:]
 
 
 def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat, flat):
@@ -1024,16 +1068,14 @@ def output(item, matches, outdir, do_move, color, tty, is_list, is_name, any_pat
         sys.stdout.write(text + "\n")
         sys.stdout.flush()
     else:
-        ln_w = max(len(str(ln)) for ln, _, _ in matches)
-        col_w = max((len(str(cn)) for _, cn, _ in matches if cn != 0), default=1)
-        for ln, cn, line in matches:
-            if cn == 0:
-                prefix = f"{DIM}{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
-                sys.stdout.write(f"{prefix}: {line.rstrip('\r\n')}\n")
-            else:
-                prefix = f"{CYAN}{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}{RESET}" if color and tty else f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
-                colored = colorize(line, any_pat) if tty else line.rstrip("\r\n")
-                sys.stdout.write(f"{prefix}: {colored}\n")
+        ln_w = max(len(str(m[0])) for m in matches)
+        col_w = max((len(str(m[1])) for m in matches if m[1]), default=1)
+        for ln, cn, line, spans in matches:
+            label = f"{disp}:{ln:0{ln_w}d}:{cn:0{col_w}d}"
+            if color and tty:
+                label = f"{DIM if cn == 0 else CYAN}{label}{RESET}"
+            body = colorize(line, any_pat, spans) if tty and cn else line.rstrip("\r\n")
+            sys.stdout.write(f"{label}: {body}\n")
             sys.stdout.flush()
 
 
@@ -1146,12 +1188,12 @@ def process_file(args):
     item, all_pats, any_pat, opts = args
     path = item["path"]
     combine = any if opts["or"] else all
+    ordered, nots, scope = opts.get("ordered"), opts.get("not") or [], opts.get("scope")
 
     if opts["name"]:
         nm = Path(item["rel"]).name if path != "-" else "(stdin)"
-        ok = seq_match(all_pats, nm) if opts.get("ordered") else combine(p.search(nm) for p in all_pats)
-        if ok and opts.get("not"):
-            ok = not any(n.search(nm) for n in opts["not"])
+        ok = (all_in(all_pats, nm, None, ordered, combine)
+              and not any(find_in(x, nm, None) for x in nots))
         return (item, []) if ok else None
 
     is_special = path != "-" and Path(path).suffix.lower() in SPECIAL_EXTS
@@ -1166,78 +1208,59 @@ def process_file(args):
         if path == "-":
             raw = list(sys.stdin)
             item["raw"] = raw
-            if do_strip:
-                raw = strip_lines(raw)
         elif is_special:
             raw = extract_lines(path)
         else:
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
                 raw = list(f)
-            if do_strip:
-                raw = strip_lines(raw)
         if raw is None:
             return None
 
-        scope_set = None
-        if opts.get("scope"):
-            scope_set = scope_lines(raw, *opts["scope"][0])
-            for pair in opts["scope"][1:]:
-                scope_set &= scope_lines(raw, *pair)
+        spans = line_spans(raw, scope)
+        if do_strip:
+            raw, spans = strip_lines(raw), ([None if sp else [] for sp in spans] if scope else spans)
 
         if opts["file"]:
-            if opts.get("ordered"):
-                it = (l for i, l in enumerate(raw, 1) if scope_set is None or i in scope_set)
-                if not all(any(p.search(l) for l in it) for p in all_pats):
+            if ordered:
+                if not seq_across(all_pats, raw, spans, 0, len(raw)):
                     return None
             else:
-                found = {i for idx, l in enumerate(raw) for i, p in enumerate(all_pats)
-                          if p.search(l) and (scope_set is None or (idx + 1) in scope_set)}
-                if not (found if opts["or"] else found >= set(range(len(all_pats)))):
+                found = {k for i, l in enumerate(raw)
+                         for k, p in enumerate(all_pats) if find_in(p, l, spans[i])}
+                if not (found if opts["or"] else len(found) == len(all_pats)):
                     return None
-            if opts.get("not") and any(any(n.search(l) for n in opts["not"])
-                                        for i, l in enumerate(raw, 1) if scope_set is None or i in scope_set):
+            if any(find_in(x, l, spans[i]) for i, l in enumerate(raw) for x in nots):
                 return None
             if opts["list"]:
                 return (item, [])
-            matches = [(ln, column(l, any_pat), l)
-                       for ln, l in enumerate(raw, 1) if any_pat.search(l) and (scope_set is None or ln in scope_set)]
-        elif window:
-            if scope_set is not None:
-                idx_map = sorted(scope_set)
-                filtered = [raw[i - 1] for i in idx_map]
-                matched_lines = window_match(filtered, all_pats, window, opts.get("ordered"), opts.get("not"))
-                matched_lines = {idx_map[ln] - 1 for ln in matched_lines}
+            matches = [(i + 1, m.start() + 1, l, spans[i]) for i, l in enumerate(raw)
+                       if (m := find_in(any_pat, l, spans[i]))]
+        else:
+            if window:
+                hit = window_match(raw, spans, all_pats, window, ordered, nots)
+                lines = ((i, raw[i]) for i in sorted(hit))
             else:
-                matched_lines = window_match(raw, all_pats, window, opts.get("ordered"), opts.get("not"))
-            matches = [(ln + 1, m.start() + 1, raw[ln]) for ln in sorted(matched_lines) if (m := any_pat.search(raw[ln]))]
+                lines = ((i, l) for i, l in enumerate(raw)
+                         if not any(find_in(x, l, spans[i]) for x in nots)
+                         and all_in(all_pats, l, spans[i], ordered, combine))
+            matches = [(i + 1, m.start() + 1, l, spans[i]) for i, l in lines
+                       if (m := find_in(any_pat, l, spans[i]))]
             if not matches:
                 return None
             if opts["list"]:
                 return (item, [])
-        else:
-            matched = [(ln, l) for ln, l in enumerate(raw, 1)
-                       if (scope_set is None or ln in scope_set) and
-                       not any(n.search(l) for n in opts.get("not", [])) and
-                       (seq_match(all_pats, l) if opts.get("ordered") else combine(p.search(l) for p in all_pats))]
-            if not matched:
-                return None
-            if opts["list"]:
-                return (item, [])
-            matches = [(ln, column(l, any_pat), l) for ln, l in matched]
 
         if maxc is not None:
             matches = matches[:maxc]
-        after = opts.get("after", 0)
-        before = opts.get("before", 0)
+        after, before = opts.get("after", 0), opts.get("before", 0)
         if after or before:
-            match_info = {ln: (cn, l) for ln, cn, l in matches}
-            seen = set()
-            expanded = []
-            for ln in sorted(match_info):
+            info = {m[0]: m for m in matches}
+            seen, expanded = set(), []
+            for ln in sorted(info):
                 for i in range(max(1, ln - before), min(len(raw), ln + after) + 1):
                     if i not in seen:
                         seen.add(i)
-                        expanded.append((i, 0, raw[i - 1]) if i not in match_info else (i,) + match_info[i])
+                        expanded.append(info.get(i) or (i, 0, raw[i - 1], None))
             matches = expanded
         return (item, matches) if matches else None
     except Exception:
@@ -1389,7 +1412,7 @@ def run_ugrep(walk_root, recursive, rel_display, args, callback):
                     results[fp] = (item, [])
                 else:
                     continue
-            results[fp][1].append((ln, cn, text + "\n"))
+            results[fp][1].append((ln, cn, text + "\n", None))
         for item, matches in results.values():
             callback((item, matches))
     return True
